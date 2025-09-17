@@ -34,19 +34,21 @@ jobs:
       - name: Re-encode MP3s to iOS/Safari-safe CBR
         shell: bash
         run: |
+          set -e
           shopt -s nullglob
-          for f in audio/*.mp3; do
-            echo "Fixing $f"
-            ffmpeg -y -hide_banner -loglevel error -i "$f" \
-              -ar 44100 \              # 44.1 kHz sample rate
-              -ac 1 \                  # mono (voice)
-              -codec:a libmp3lame \
-              -b:a 128k \              # CBR 128 kbps
-              -write_xing 0 \          # geen VBR/Xing header
-              -map_metadata -1 \       # strip metadata
-              "$f.tmp"
-            mv "$f.tmp" "$f"
-          done
+          if compgen -G "audio/*.mp3" > /dev/null; then
+            for f in audio/*.mp3; do
+              out="${f%.mp3}.fixed.mp3"
+              echo "Fixing $f -> $out"
+              ffmpeg -y -hide_banner -loglevel error -i "$f" \
+                -ar 44100 -ac 1 -codec:a libmp3lame -b:a 128k \
+                -write_xing 0 -map_metadata -1 \
+                "$out"
+              mv "$out" "$f"
+            done
+          else
+            echo "⚠️  Geen MP3's gevonden in audio/. Sla re-encode over."
+          fi
 
       - name: Commit audio files
         run: |
