@@ -8,12 +8,16 @@ TMP_DIR = REPO_ROOT / "tools" / ".tmp_audio"
 
 AUDIO_DIR.mkdir(exist_ok=True, parents=True)
 TMP_DIR.mkdir(exist_ok=True, parents=True)
+for p in TMP_DIR.glob("*.wav"):
+    try: p.unlink()
+    except: pass
 
 # ====== Instelbare TTS-parameters (ook via env-vars te overschrijven) ======
 ESPEAK_VOICE = os.getenv("ESPEAK_VOICE", "nl")     # Nederlands
 ESPEAK_RATE  = int(os.getenv("ESPEAK_RATE", "140"))# woorden/min (rustiger dan ~175)
 ESPEAK_PITCH = int(os.getenv("ESPEAK_PITCH", "30"))# 0..99 (30 = neutraal)
 ESPEAK_GAIN  = int(os.getenv("ESPEAK_GAIN", "175"))# 0..200 (volume)
+
 
 # ---------- Helpers ----------
 def slugify(title: str) -> str:
