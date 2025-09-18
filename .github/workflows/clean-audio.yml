@@ -1,0 +1,37 @@
+name: Clean audio folder
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove generated audio files
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          rm -f audio/*.mp3 audio/*.m4a audio/*.wav || true
+          mkdir -p audio
+          touch audio/.gitkeep
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A audio/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Clean audio directory"
+            git push
+          fi
