@@ -5,7 +5,8 @@
 <title>10K Run Coach</title>
 <style>
   :root { --bg:#0b0d10; --fg:#e7f0f7; --muted:#a8b3bd; --accent:#52d1ff; }
-  html,body { margin:0; padding:0; background:var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  html,body { margin:0; padding:0; background:var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
   .wrap { max-width: 820px; margin: 0 auto; padding: 20px 16px 80px; }
   h1 { font-size: 22px; margin: 0 0 12px; }
   p { line-height: 1.5; color: var(--muted); }
@@ -16,7 +17,9 @@
   }
   button.primary { background: var(--accent); color: #001018; border: none; font-weight: 700; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .controls { position: sticky; bottom: 0; left: 0; right: 0; background: linear-gradient(180deg, rgba(11,13,16,0.0), rgba(11,13,16,0.85) 18%, rgba(11,13,16,1) 40%); padding: 12px 16px 20px; backdrop-filter: blur(6px); }
+  .controls { position: sticky; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(180deg, rgba(11,13,16,0.0), rgba(11,13,16,0.85) 18%, rgba(11,13,16,1) 40%);
+    padding: 12px 16px 20px; backdrop-filter: blur(6px); }
   .pill { display:inline-block; padding:6px 10px; border:1px solid #23313a; border-radius:999px; color:#bcd; font-size:12px; margin-right:6px; }
   .cue-list { margin-top: 8px; border: 1px solid #1f2a33; border-radius: 10px; overflow: hidden; }
   .cue { padding: 10px 12px; border-top: 1px solid #182028; display:flex; gap:12px; }
@@ -32,16 +35,15 @@
 <body>
 <div class="wrap">
   <h1>10K Run Coach – iPhone</h1>
-  <p>Speelt gesproken aanwijzingen precies op tijd.
-    <span class="warn">Tip:</span> in <b>MP3</b>-modus kun je je telefoon vergrendelen. In <b>TTS</b>-modus moet het scherm aan blijven.</p>
-  <div class="ver">Build: v8 (sessions.json + MP3/TTS fixes)</div>
+  <p>Speelt gesproken aanwijzingen precies op tijd. <span class="warn">Tip:</span> in <b>MP3</b>-modus kan je scherm op slot; in <b>TTS</b>-modus moet het scherm aan blijven.</p>
+  <div class="ver">Build: v8 (MP3-first, TTS fallback)</div>
 
   <label for="session">Kies je sessie</label>
   <select id="session"></select>
 
   <div class="row">
     <div>
-      <label for="voice">Stem (Nederlands)</label>
+      <label for="voice">Stem (TTS)</label>
       <select id="voice"></select>
     </div>
     <div>
@@ -65,378 +67,268 @@
   </div>
 
   <div id="cueList" class="cue-list"></div>
-  <div class="debug" id="debug">Laden…</div>
+  <div class="debug" id="debug">Status…</div>
   <footer>
     <p>Tip: voeg toe aan je beginscherm voor snel starten (Deel ▸ <i>Zet op beginscherm</i>).</p>
   </footer>
 </div>
 
-<!-- MP3-speler (onzichtbaar) -->
-<audio id="mp3Player" preload="auto"></audio>
+<!-- Onzichtbare speler voor MP3 -->
+<audio id="mp3Player" preload="auto" playsinline></audio>
 
 <script>
+/* ===== Sessions laden uit tools/sessions.json ===== */
+let SESSIONS = [];
+async function loadSessions(){
+  const res = await fetch('tools/sessions.json', {cache:'no-store'});
+  if(!res.ok) throw new Error('Kan tools/sessions.json niet laden');
+  SESSIONS = await res.json();
+}
+
 /* ---------- UI refs ---------- */
-const $ = sel => document.querySelector(sel);
+const $ = s => document.querySelector(s);
 const sessionSel = $("#session");
-const voiceSel = $("#voice");
+const voiceSel   = $("#voice");
 const statusPill = $("#status");
-const elapsedPill = $("#elapsed");
-const cueList = $("#cueList");
-const startBtn = $("#startBtn");
-const stopBtn = $("#stopBtn");
-const pauseBtn = $("#pauseBtn");
-const resumeBtn = $("#resumeBtn");
-const debugEl = $("#debug");
-const modePill = $("#modePill");
-const mp3 = document.getElementById('mp3Player');
+const elapsedPill= $("#elapsed");
+const cueList    = $("#cueList");
+const startBtn   = $("#startBtn");
+const stopBtn    = $("#stopBtn");
+const pauseBtn   = $("#pauseBtn");
+const resumeBtn  = $("#resumeBtn");
+const debugEl    = $("#debug");
+const modePill   = $("#modePill");
+const mp3        = $("#mp3Player");
 
 const MIN_START_DELAY_MS = 220;
 
-let SESSIONS = [];
-let SESSION_GROUPS = {};
-let VOICES = [];
-let NL_VOICES = [];
+let VOICES=[], NL_VOICES=[];
+let timeouts=[], ticker=null;
+let startEpoch=0, pausedAt=0;
+let running=false, paused=false;
+let currentSession=null, spokenCount=0;
 
-let timeouts = [];
-let startEpoch = 0;
-let pausedAt = 0;
-let running = false;
-let paused = false;
-let currentSession = null;
-let spokenCount = 0;
-let useMP3 = false;
-
-/* ====== Beep (TTS-modus) ====== */
-let AC = null;
-function getAC(){
-  try { if (!AC) AC = new (window.AudioContext||window.webkitAudioContext)(); }
-  catch(e){ AC = null; }
-  return AC;
-}
+/* ====== AudioContext voor beep in TTS ====== */
+let AC=null;
+function getAC(){ try{ if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ AC=null; } return AC; }
 function beep(ms=80, freq=880){
-  const ac = getAC();
-  if (!ac) return;
-  const o = ac.createOscillator();
-  const g = ac.createGain();
+  const ac = getAC(); if(!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain();
   o.connect(g); g.connect(ac.destination);
-  try { g.gain.setValueAtTime(0.0001, ac.currentTime); } catch(e){ g.gain.value = 0.0001; }
-  try { g.gain.linearRampToValueAtTime(0.08, ac.currentTime + 0.01); } catch(e){}
-  try { g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + ms/1000); } catch(e){}
-  o.frequency.value = freq;
-  o.start(); o.stop(ac.currentTime + ms/1000 + 0.02);
+  try { g.gain.setValueAtTime(0.0001, ac.currentTime); g.gain.linearRampToValueAtTime(0.08, ac.currentTime+0.01); g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+ms/1000); } catch(e){}
+  o.frequency.value = freq; o.start(); o.stop(ac.currentTime + ms/1000 + 0.02);
 }
 
-/* ---------- Helpers ---------- */
-function z2(n){ return (n<10?'0':'')+n; }
-function fmt(ms){
-  const s = Math.max(0, Math.floor(ms/1000));
-  return z2(Math.floor(s/60))+':'+z2(s%60);
-}
+/* ---------- helpers ---------- */
+function z2(n){return (n<10?'0':'')+n;}
+function fmt(ms){ const s = Math.max(0, Math.floor(ms/1000)); return z2(Math.floor(s/60))+':'+z2(s%60); }
 function slugify(s){ return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80); }
-function mp3UrlFor(session){ return 'audio/' + slugify(session.title) + '.mp3'; }
+function mp3UrlFor(sess){ return 'audio/'+slugify(sess.title)+'.mp3'; }
 
-function groupSessions(data){
-  const days = ['Zondag','Maandag','Dinsdag','Woensdag','Donderdag','Vrijdag','Zaterdag'];
-  const map = {};
-  data.forEach((s, idx) => {
-    const m = s.title.match(/Week\s+(\d+)/i);
-    const week = m ? String(parseInt(m[1],10)) : 'Overig';
-    let day_order = 99;
-    for (let i=0;i<days.length;i++){ if (s.title.includes(days[i])) { day_order = i; break; } }
-    (map[week] ||= []).push({idx, title: s.title, day_order});
-  });
-  Object.keys(map).forEach(w => map[w].sort((a,b)=>a.day_order-b.day_order));
-  return map;
-}
-
-function populateSessions() {
-  sessionSel.innerHTML = "";
-  const weeks = Object.keys(SESSION_GROUPS).map(n => parseInt(n,10)).sort((a,b)=>a-b);
-  if (!weeks.length) {
-    const opt = document.createElement('option');
-    opt.value = -1; opt.textContent = "⚠︎ Geen sessies gevonden";
-    sessionSel.appendChild(opt);
-    return;
-  }
-  weeks.forEach(week => {
-    const og = document.createElement('optgroup');
-    og.label = "Week " + week + " – trainingsdagen";
-    (SESSION_GROUPS[String(week)] || []).forEach(row => {
-      const opt = document.createElement('option');
-      opt.value = row.idx;
-      opt.textContent = SESSIONS[row.idx].title;
-      og.appendChild(opt);
-    });
-    sessionSel.appendChild(og);
-  });
-}
-
-function renderCues(sess) {
-  cueList.innerHTML = "";
-  if (!sess || !sess.cues) return;
-  sess.cues.forEach(c => {
+function renderCues(sess){
+  cueList.innerHTML = '';
+  (sess?.cues||[]).forEach(c=>{
     const row = document.createElement('div');
-    row.className = 'cue';
-    const mm = z2(Math.floor(c.t/60));
-    const ss = z2(c.t%60);
+    row.className='cue';
+    const mm=z2(Math.floor(c.t/60)), ss=z2(c.t%60);
     row.innerHTML = `<div class="t">${mm}:${ss}</div><div class="txt">${c.text}</div>`;
     cueList.appendChild(row);
   });
 }
 
-function loadVoices() {
-  VOICES = speechSynthesis.getVoices() || [];
+function populateSessions(){
+  sessionSel.innerHTML='';
+  SESSIONS.forEach((s,i)=>{
+    const opt=document.createElement('option');
+    opt.value=String(i); opt.textContent=s.title;
+    sessionSel.appendChild(opt);
+  });
+}
+
+function updateDebug(){
+  debugEl.textContent = `Sessies: ${(SESSIONS||[]).length} • Stemmen: ${(VOICES||[]).length} (NL: ${(NL_VOICES||[]).length})`;
+}
+
+function loadVoices(){
+  VOICES = speechSynthesis.getVoices()||[];
   NL_VOICES = VOICES.filter(v => (v.lang||'').toLowerCase().startsWith('nl'));
-  voiceSel.innerHTML = "";
+  voiceSel.innerHTML='';
   const list = NL_VOICES.length ? NL_VOICES : VOICES;
-  if (!list.length) {
-    const opt = document.createElement('option');
-    opt.value = "";
-    opt.textContent = "⚠︎ Geen stemmen beschikbaar (tik op pagina en probeer Start)";
+  if(!list.length){
+    const opt=document.createElement('option'); opt.value=''; opt.textContent='⚠︎ Geen stemmen beschikbaar (tik en probeer Start)';
     voiceSel.appendChild(opt);
-  } else {
-    list.forEach((v) => {
-      const opt = document.createElement('option');
-      opt.value = v.name;
-      opt.textContent = `${v.name} — ${v.lang}`;
+  }else{
+    list.forEach(v=>{
+      const opt=document.createElement('option');
+      opt.value=v.name; opt.textContent=`${v.name} — ${v.lang}`;
       voiceSel.appendChild(opt);
     });
   }
   updateDebug();
 }
 
-function ensureVoicesLoaded(cb) {
-  const v = speechSynthesis.getVoices();
-  if (v && v.length) { loadVoices(); cb && cb(); return; }
-  speechSynthesis.onvoiceschanged = () => { loadVoices(); cb && cb(); };
-  setTimeout(() => { loadVoices(); cb && cb(); }, 800);
+function ensureVoicesLoaded(cb){
+  const v=speechSynthesis.getVoices();
+  if(v && v.length){ loadVoices(); cb&&cb(); return; }
+  speechSynthesis.onvoiceschanged=()=>{ loadVoices(); cb&&cb(); };
+  setTimeout(()=>{ loadVoices(); cb&&cb(); }, 1200);
 }
 
-function updateDebug() {
-  const vc = (VOICES||[]).length;
-  const nlc = (NL_VOICES||[]).length;
-  const sc = (SESSIONS||[]).length;
-  debugEl.textContent = `Sessies: ${sc} • Stemmen: ${vc} (NL: ${nlc}) • Modus: ${useMP3 ? 'MP3' : 'TTS'}`;
-}
-
-/* ====== Onthoud laatste sessie + default op basis van vandaag ====== */
-function pickDefaultSession(){
-  try {
-    const saved = localStorage.getItem('lastSessIdx');
-    if (saved !== null && SESSIONS[+saved]) return +saved;
-  } catch(e){}
-  const nlDays = ['Zondag','Maandag','Dinsdag','Woensdag','Donderdag','Vrijdag','Zaterdag'];
-  const today = nlDays[new Date().getDay()];
-  const idx = SESSIONS.findIndex(s => s.title.includes(today));
-  return idx >= 0 ? idx : 0;
-}
-
-/* ====== MP3 of TTS kiezen ====== */
+/* ===== Mode: MP3 of TTS ===== */
+let useMP3=false;
 async function pickAudioModeFor(sess){
-  useMP3 = false;
-  modePill.textContent = 'TTS';
+  useMP3=false; modePill.textContent='TTS';
   mp3.removeAttribute('src');
-  if (!sess) return;
-
-  const url = mp3UrlFor(sess);
-  try {
-    const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-    if (res.ok) {
-      useMP3 = true;
-      modePill.textContent = 'MP3';
-      mp3.src = url;
-      mp3.load();
+  if(!sess) return;
+  const url=mp3UrlFor(sess);
+  try{
+    const res=await fetch(url,{method:'HEAD',cache:'no-store'});
+    if(res.ok){
+      useMP3=true; modePill.textContent='MP3';
+      mp3.src=url; mp3.load();
+      mp3.defaultPlaybackRate=1.0; mp3.playbackRate=1.0;
     }
-  } catch(e){}
-  updateDebug();
+  }catch(e){}
 }
 
-/* ====== Init ====== */
-async function init() {
-  // 1) sessions.json ophalen
-  try {
-    const res = await fetch('tools/sessions.json', {cache:'no-store'});
-    SESSIONS = await res.json();
-  } catch(e){
-    debugEl.textContent = 'Kon tools/sessions.json niet laden.';
-    return;
-  }
-
-  // 2) groepen opbouwen + UI vullen
-  SESSION_GROUPS = groupSessions(SESSIONS);
-  populateSessions();
-
-  // 3) default sessie kiezen
-  const defIdx = pickDefaultSession();
-  sessionSel.value = String(defIdx);
-  currentSession = SESSIONS[defIdx];
-  renderCues(currentSession);
-  await pickAudioModeFor(currentSession);
-
-  // 4) voices voorbereiden
-  ensureVoicesLoaded();
-  updateDebug();
-}
-
-sessionSel.addEventListener('change', async () => {
-  const idx = parseInt(sessionSel.value, 10);
-  currentSession = Number.isInteger(idx) && idx >= 0 ? SESSIONS[idx] : null;
-  renderCues(currentSession);
-  stopAll();
-  await pickAudioModeFor(currentSession);
-  try { localStorage.setItem('lastSessIdx', String(idx)); } catch(e){}
-});
-
-function setStatus(txt){ statusPill.textContent = txt; }
-
-let ticker = null;
-function startTicker() {
-  if (ticker) clearInterval(ticker);
-  ticker = setInterval(() => {
-    if (!running) return;
-    if (useMP3) {
-      elapsedPill.textContent = fmt((mp3.currentTime||0) * 1000);
-    } else {
-      const now = paused ? pausedAt : Date.now();
+/* ===== Ticker ===== */
+function startTicker(){
+  if(ticker) clearInterval(ticker);
+  ticker = setInterval(()=>{
+    if(!running) return;
+    if(useMP3){
+      elapsedPill.textContent = fmt(Math.floor((mp3.currentTime||0)*1000));
+    }else{
+      const now = paused? pausedAt : Date.now();
       elapsedPill.textContent = fmt(now - startEpoch);
     }
   }, 250);
 }
 
-function speak(text) {
-  // iOS bug-werkaround: kies stem bij elke utterance opnieuw
-  const voices = speechSynthesis.getVoices() || [];
-  const selName = voiceSel && voiceSel.value;
-  const pick = voices.find(v => v.name === selName)
-           || voices.find(v => (v.lang||'').toLowerCase().startsWith('nl'))
-           || voices[0];
+/* ===== TTS speak (met iOS workarounds) ===== */
+function speak(text){
+  // iOS-werkvorm: elke keer vers de stemmen pakken
+  const voices = speechSynthesis.getVoices()||[];
+  const selName = voiceSel?.value;
+  const pick = voices.find(v=>v.name===selName)
+        || voices.find(v=>(v.lang||'').toLowerCase().startsWith('nl'))
+        || voices[0];
 
   const u = new SpeechSynthesisUtterance(text);
-  if (pick) { u.voice = pick; u.lang = pick.lang || 'nl-NL'; }
-  u.rate = 1.0;   // vaste snelheid
-  u.pitch = 1.0;
-  u.volume = 1.0;
-
+  if(pick){ u.voice=pick; u.lang=pick.lang||'nl-NL'; }
+  u.rate=1.0; u.pitch=1.0; u.volume=1.0;
   speechSynthesis.speak(u);
 }
 
-/* ---------- Planning van cues (alleen TTS-modus) ---------- */
-function clearTimeouts() { timeouts.forEach(id => clearTimeout(id)); timeouts = []; }
+/* ===== Planner (alleen voor TTS) ===== */
+function clearTimeouts(){ timeouts.forEach(id=>clearTimeout(id)); timeouts=[]; }
 
-function schedule(sess, offsetMs = 0) {
+function schedule(sess, offsetMs=0){
   clearTimeouts();
-  if (!sess || !sess.cues || !sess.cues.length) return;
-
-  const base = Date.now() + MIN_START_DELAY_MS - offsetMs;
+  if(!sess || !sess.cues || !sess.cues.length) return;
+  const base = Date.now() + MIN_START_DELAY_MS - offsetMs; // kleine startvertraging
   startEpoch = base;
-
-  sess.cues.forEach((c, idx) => {
-    const at = base + c.t * 1000;
+  sess.cues.forEach((c, idx)=>{
+    const at = base + c.t*1000;
     const delay = Math.max(0, at - Date.now());
 
-    // pre-beep 1s vooraf
     const pre = Math.max(0, delay - 1000);
-    const preId = setTimeout(() => { if (running) beep(); }, pre);
-    timeouts.push(preId);
+    timeouts.push(setTimeout(()=>{ if(running && !useMP3) beep(); }, pre));
 
-    const id = setTimeout(() => {
-      if (!running) return;
+    timeouts.push(setTimeout(()=>{
+      if(!running || useMP3) return;
       speak(c.text);
-      spokenCount = idx + 1;
-    }, delay);
-    timeouts.push(id);
+      spokenCount = idx+1;
+    }, delay));
   });
-
   startTicker();
 }
 
-/* ---------- Besturing ---------- */
-function stopAll() {
-  running = false;
-  paused = false;
+/* ===== Controls ===== */
+function setStatus(t){ statusPill.textContent=t; }
+
+function stopAll(){
+  running=false; paused=false;
   clearTimeouts();
-  if (useMP3) {
-    try { mp3.pause(); mp3.currentTime = 0; } catch(e){}
-  } else {
-    try { speechSynthesis.cancel(); } catch(e){}
-  }
+  if(useMP3){ try{ mp3.pause(); mp3.currentTime=0; }catch(e){} }
+  else { speechSynthesis.cancel(); }
   setStatus('Klaar');
-  elapsedPill.textContent = '00:00';
-  spokenCount = 0;
+  elapsedPill.textContent='00:00';
+  spokenCount=0;
 }
 
-startBtn.addEventListener('click', async () => {
-  if (!currentSession) return;
-  stopAll();
-  running = true;
-  paused = false;
-  setStatus('Bezig');
+startBtn.addEventListener('click', ()=>{
+  if(!currentSession) return;
+  stopAll(); running=true; paused=false; setStatus('Bezig');
 
-  // AudioContext unlock voor beep
-  try {
-    AC = getAC();
-    const o = AC.createOscillator();
-    const g = AC.createGain();
-    o.connect(g); g.connect(AC.destination);
-    g.gain.value = 0.0001; o.start(); o.stop(AC.currentTime + 0.05);
-  } catch(e){}
+  // “Unlock” audio voor iOS (beep)
+  try{
+    const ac=getAC(); const o=ac.createOscillator(), g=ac.createGain();
+    o.connect(g); g.connect(ac.destination); g.gain.value=0.0001; o.start(); o.stop(ac.currentTime+0.05);
+  }catch(e){}
 
-  if (useMP3) {
-    // MP3-modus: gewoon afspelen
-    try {
-      mp3.currentTime = 0;
-      await mp3.play();
-      startTicker();
-    } catch(e){
-      setStatus('Kon MP3 niet starten');
-      running = false;
-    }
-  } else {
-    // TTS-modus: zeker weten dat engine schoon is, klein delaytje
-    try { speechSynthesis.cancel(); } catch(e){}
-    setTimeout(() => {
-      ensureVoicesLoaded(() => schedule(currentSession, 0));
-    }, MIN_START_DELAY_MS);
+  if(useMP3){
+    mp3.currentTime=0; mp3.defaultPlaybackRate=1.0; mp3.playbackRate=1.0;
+    mp3.play().catch(()=>{ /* user gesture nodig */ });
+    startTicker();
+  }else{
+    // volledig cancel + mini-delay voorkomt “trage stem” in iOS
+    speechSynthesis.cancel();
+    setTimeout(()=>{ ensureVoicesLoaded(()=>schedule(currentSession,0)); }, MIN_START_DELAY_MS);
   }
 });
 
 stopBtn.addEventListener('click', stopAll);
 
-pauseBtn.addEventListener('click', () => {
-  if (!running || paused) return;
-  paused = true;
-  if (useMP3) {
-    try { mp3.pause(); } catch(e){}
-  } else {
+pauseBtn.addEventListener('click', ()=>{
+  if(!running || paused) return;
+  paused=true; setStatus('Gepauzeerd');
+  if(useMP3){
+    mp3.pause();
+  }else{
+    // iOS-bug: liever cancel + later herplannen dan pause()
+    speechSynthesis.cancel();
     clearTimeouts();
-    try { speechSynthesis.cancel(); } catch(e){} // iOS: voorkomt 'trage stem' bij hervatten
     pausedAt = Date.now();
   }
-  setStatus('Gepauzeerd');
 });
 
-resumeBtn.addEventListener('click', () => {
-  if (!running || !paused) return;
-  paused = false;
-  setStatus('Bezig');
-
-  if (useMP3) {
-    mp3.play().catch(()=>setStatus('Kon niet hervatten'));
-  } else {
+resumeBtn.addEventListener('click', ()=>{
+  if(!running || !paused) return;
+  paused=false; setStatus('Bezig');
+  if(useMP3){
+    mp3.play().catch(()=>{});
+  }else{
     const elapsed = pausedAt - startEpoch;
-    const remain = {
-      title: currentSession.title,
-      cues: currentSession.cues.filter(c => c.t * 1000 >= elapsed)
-    };
-    setTimeout(() => schedule(remain, elapsed), MIN_START_DELAY_MS);
+    const remain = { title: currentSession.title, cues: currentSession.cues.filter(c => c.t*1000 >= elapsed) };
+    setTimeout(()=>schedule(remain, elapsed), MIN_START_DELAY_MS);
   }
 });
 
-/* ---------- MP3 events ---------- */
-mp3.addEventListener('ended', () => { running = false; paused = false; setStatus('Klaar'); });
+/* MP3 status */
+mp3.addEventListener('ended', ()=>{ running=false; paused=false; setStatus('Klaar'); });
+
+/* ===== Init ===== */
+async function init(){
+  await loadSessions();
+  populateSessions();
+  currentSession = SESSIONS[0]; // default eerste
+  sessionSel.value = '0';
+  renderCues(currentSession);
+  await pickAudioModeFor(currentSession);
+  ensureVoicesLoaded();
+  updateDebug();
+}
+sessionSel.addEventListener('change', async ()=>{
+  const idx = +sessionSel.value;
+  currentSession = SESSIONS[idx] || null;
+  renderCues(currentSession);
+  stopAll();
+  await pickAudioModeFor(currentSession);
+});
 
 document.addEventListener('DOMContentLoaded', init);
-document.addEventListener('touchstart', () => ensureVoicesLoaded(), {once:true});
-document.addEventListener('click', () => ensureVoicesLoaded(), {once:true});
+document.addEventListener('touchstart', ()=>ensureVoicesLoaded(), {once:true});
+document.addEventListener('click', ()=>ensureVoicesLoaded(), {once:true});
 </script>
 </body></html>
