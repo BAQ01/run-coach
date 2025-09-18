@@ -4,9 +4,10 @@ on:
   push:
     branches: [ main ]
     paths:
+      - "tools/sessions.json"
+      - "tools/tts_build.py"
       - "index.html"
       - ".github/workflows/tts-build.yml"
-      - "tools/**"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +16,13 @@ permissions:
 jobs:
   build-audio:
     runs-on: ubuntu-latest
+    env:
+      # TTS-instellingen (kun je hier aanpassen)
+      ESPEAK_VOICE: "nl"
+      ESPEAK_RATE: "140"    # bijv. 130/150 naar smaak
+      ESPEAK_PITCH: "30"
+      ESPEAK_GAIN: "175"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,45 +34,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg espeak-ng python3
 
-      # ⇩ HIER env toevoegen voor TTS-instellingen ⇩
-      - name: Generate audio (TTS → MP3 + M4A)
-        env:
-          ESPEAK_VOICE: "nl"
-          ESPEAK_RATE: "130"   # pas aan naar smaak (130/140/150)
-          ESPEAK_PITCH: "30"
-          ESPEAK_GAIN: "175"
+      - name: Build MP3s from tools/sessions.json
         run: |
           mkdir -p audio
           python3 tools/tts_build.py
-          ls -la audio || true
 
       - name: Re-encode MP3s to iOS/Safari-safe CBR
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           shopt -s nullglob
-          if compgen -G "audio/*.mp3" > /dev/null; then
-            for f in audio/*.mp3; do
-              out="${f%.mp3}.fixed.mp3"
-              echo "Fixing $f -> $out"
+          files=(audio/*.mp3)
+          if (( ${#files[@]} )); then
+            for f in "${files[@]}"; do
+              echo "Re-encoding $f"
               ffmpeg -y -hide_banner -loglevel error -i "$f" \
                 -ar 44100 -ac 1 -codec:a libmp3lame -b:a 128k \
                 -write_xing 0 -map_metadata -1 \
-                "$out"
-              mv "$out" "$f"
+                "${f%.mp3}.tmp.mp3"
+              mv "${f%.mp3}.tmp.mp3" "$f"
             done
           else
             echo "⚠️  Geen MP3's gevonden in audio/. Sla re-encode over."
           fi
 
       - name: Commit audio files
+        shell: bash
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A audio/
           if git diff --cached --quiet; then
-            echo "Geen wijzigingen om te committen"
+            echo "Geen wijzigingen om te committen."
           else
-            git commit -m "Build MP3s (CBR 44.1kHz mono)"
+            git commit -m "Build MP3s (CBR 44.1kHz mono) from sessions.json"
             git push
           fi
