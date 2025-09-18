@@ -17,10 +17,12 @@ jobs:
   build-audio:
     runs-on: ubuntu-latest
     env:
-      ESPEAK_VOICE: "nl"
-      ESPEAK_RATE: "140"
-      ESPEAK_PITCH: "30"
+      ESPEAK_VOICE: "nl"      # of "nl+m3" / "nl+f3"
+      ESPEAK_RATE: "185"      # 175–195 is meestal prettig
+      ESPEAK_PITCH: "35"
       ESPEAK_GAIN: "175"
+      ESPEAK_WORDGAP: "1"     # 0–2; lager = minder woordpauze
+      ESPEAK_NOSENTPAUSE: "1" # 1 = geen extra zins-pauze (-z)
 
     steps:
       - name: Checkout
