@@ -6,6 +6,11 @@ on:
 permissions:
   contents: write
 
+# voorkomt dat clean en build tegelijk in elkaars vaarwater komen
+concurrency:
+  group: audio-maintenance
+  cancel-in-progress: false
+
 jobs:
   clean:
     runs-on: ubuntu-latest
@@ -18,14 +23,22 @@ jobs:
       - name: Remove generated audio files
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           shopt -s nullglob
-          rm -f audio/*.mp3 audio/*.m4a audio/*.wav || true
+          echo "Before:"
+          ls -al audio || true
+
           mkdir -p audio
-          touch audio/.gitkeep
+          rm -f audio/*.mp3 audio/*.m4a audio/*.wav || true
+          : > audio/.gitkeep  # leeg bestand zodat de map in git blijft
+
+          echo "After:"
+          ls -al audio
 
       - name: Commit changes
+        shell: bash
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A audio/
@@ -33,5 +46,7 @@ jobs:
             echo "Nothing to commit"
           else
             git commit -m "Clean audio directory"
+            # rebase voor het geval een andere job al gepusht heeft
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push
           fi
