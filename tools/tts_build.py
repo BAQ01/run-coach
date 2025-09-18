@@ -36,22 +36,32 @@ def make_beep(path: pathlib.Path, seconds: float = 0.08, freq: int = 880):
 def tts_wav(text: str, out_path: pathlib.Path, voice: str = ESPEAK_VOICE,
             speed_wpm: int = ESPEAK_RATE, pitch: int = ESPEAK_PITCH, gain: int = ESPEAK_GAIN):
     """
-    Genereer een WAV met espeak-ng.
-    -s: snelheid (woorden per minuut)
-    -p: pitch (0..99)
-    -a: amplitude/volume (0..200)
+    Genereer WAV met espeak-ng, daarna normeer naar 48kHz mono pcm_s16le
+    zodat alle delen identieke audioparameters hebben vóór concat.
     """
-    # Gebruik lijst-argv ipv shell-string om quoting 100% safe te houden
+    tmp_raw = out_path.with_suffix(".raw.wav")
+    # 1) TTS naar tijdelijke WAV (espeak-ng bepaalt zelf sample rate)
     cmd = [
         "espeak-ng",
         "-v", str(voice),
         "-s", str(speed_wpm),
         "-p", str(pitch),
         "-a", str(gain),
-        "-w", str(out_path),
+        "-w", str(tmp_raw),
         "--", text
     ]
     subprocess.check_call(cmd)
+
+    # 2) Resample/convert naar 48kHz mono PCM (matcht beep/silence)
+    run(
+        f"ffmpeg -y -hide_banner -loglevel error -i {shlex.quote(str(tmp_raw))} "
+        f"-ar 48000 -ac 1 -c:a pcm_s16le {shlex.quote(str(out_path))}"
+    )
+
+    try:
+        tmp_raw.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 def concat_wavs_to_mp3(parts, out_mp3: pathlib.Path):
     # concat demuxer: alle WAVs moeten dezelfde audioparameters hebben (pcm_s16le/48k/mono)
