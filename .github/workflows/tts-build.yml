@@ -26,10 +26,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg espeak-ng python3
 
-      - name: Generate MP3s
+      # ⇩ HIER env toevoegen voor TTS-instellingen ⇩
+      - name: Generate audio (TTS → MP3 + M4A)
+        env:
+          ESPEAK_VOICE: "nl"
+          ESPEAK_RATE: "130"   # pas aan naar smaak (130/140/150)
+          ESPEAK_PITCH: "30"
+          ESPEAK_GAIN: "175"
         run: |
           mkdir -p audio
           python3 tools/tts_build.py
+          ls -la audio || true
 
       - name: Re-encode MP3s to iOS/Safari-safe CBR
         shell: bash
