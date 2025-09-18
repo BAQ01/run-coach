@@ -95,6 +95,8 @@ const resumeBtn = $("#resumeBtn");
 const debugEl = $("#debug");
 const modePill = $("#modePill");
 const mp3 = document.getElementById('mp3Player');
+  // Kleine buffer voor iOS-stabiliteit
+const MIN_START_DELAY_MS = 220;
 
 let VOICES = [];
 let NL_VOICES = [];
@@ -271,24 +273,35 @@ function startTicker() {
 }
 
 function speak(text) {
+  // Haal stemmen elke keer vers op (iOS bug-werkaround)
+  const voices = speechSynthesis.getVoices() || [];
+  const selName = voiceSel && voiceSel.value;
+  const pick = voices.find(v => v.name === selName)
+           || voices.find(v => (v.lang||'').toLowerCase().startsWith('nl'))
+           || voices[0];
+
   const u = new SpeechSynthesisUtterance(text);
-  const pick = Array.from(voiceSel.options).find(o => o.selected);
-  const v = (NL_VOICES.find(v => v.name === (pick && pick.value)) || VOICES.find(v => v.name === (pick && pick.value)));
-  if (v) u.voice = v;
+  if (pick) { u.voice = pick; u.lang = pick.lang || 'nl-NL'; }
+  u.rate = parseFloat(rateSl?.value) || 1.0;
+  u.pitch = 1.0;
+  u.volume = 1.0;
+
   speechSynthesis.speak(u);
 }
 
 /* ---------- Planning van cues (TTS-modus) ---------- */
-function schedule(sess, offsetMs=0) {
+function schedule(sess, offsetMs = 0) {
   clearTimeouts();
   if (!sess || !sess.cues || !sess.cues.length) return;
-  const base = Date.now() - offsetMs;
+
+  const base = Date.now() + MIN_START_DELAY_MS - offsetMs; // kleine startvertraging
   startEpoch = base;
+
   sess.cues.forEach((c, idx) => {
-    const at = base + c.t*1000;
+    const at = base + c.t * 1000;
     const delay = Math.max(0, at - Date.now());
 
-    // pre-beep 1s vóór elke cue
+    // pre-beep 1s vooraf (alleen als je beep() hebt)
     const pre = Math.max(0, delay - 1000);
     const preId = setTimeout(() => { if (running) beep(); }, pre);
     timeouts.push(preId);
@@ -300,7 +313,9 @@ function schedule(sess, offsetMs=0) {
     }, delay);
     timeouts.push(id);
   });
+
   startTicker();
+}
 }
 
 function clearTimeouts() {
@@ -330,22 +345,19 @@ startBtn.addEventListener('click', () => {
   paused = false;
   setStatus('Bezig');
 
-  if (useMP3) {
-    startEpoch = Date.now();
-    mp3.currentTime = 0;
-    mp3.play().catch(()=>{});
-    startTicker();
-  } else {
-    schedule(currentSession, 0);
-    try {
-      AC = getAC();
-      const o = AC.createOscillator();
-      const g = AC.createGain();
-      o.connect(g); g.connect(AC.destination);
-      g.gain.value = 0.0001;
-      o.start(); o.stop(AC.currentTime + 0.05);
-    } catch(e){}
-  }
+  // AudioContext “unlock” voor de beep (optioneel, als je beep() gebruikt)
+  try {
+    AC = getAC();
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    g.gain.value = 0.0001; o.start(); o.stop(AC.currentTime + 0.05);
+  } catch(e){}
+
+  // Geef de TTS-engine een fractie tijd na cancel()
+  setTimeout(() => {
+    ensureVoicesLoaded(() => schedule(currentSession, 0));
+  }, MIN_START_DELAY_MS);
 });
 
 stopBtn.addEventListener('click', stopAll);
@@ -353,29 +365,24 @@ stopBtn.addEventListener('click', stopAll);
 pauseBtn.addEventListener('click', () => {
   if (!running || paused) return;
   paused = true;
-  if (useMP3) {
-    mp3.pause();
-  } else {
-    speechSynthesis.pause();
-    clearTimeouts();
-    pausedAt = Date.now();
-  }
+  clearTimeouts();
+  speechSynthesis.cancel();      // iOS bug voorkomen
+  pausedAt = Date.now();
   setStatus('Gepauzeerd');
 });
 
 resumeBtn.addEventListener('click', () => {
   if (!running || !paused) return;
   paused = false;
+  const elapsed = pausedAt - startEpoch;
+  const remain = {
+    title: currentSession.title,
+    cues: currentSession.cues.filter(c => c.t * 1000 >= elapsed)
+  };
   setStatus('Bezig');
-  if (useMP3) {
-    mp3.play().catch(()=>{});
-  } else {
-    const elapsed = pausedAt - startEpoch;
-    const remain = { title: currentSession.title, cues: currentSession.cues.filter(c => c.t*1000 >= elapsed) };
-    speechSynthesis.resume();
-    schedule(remain, elapsed);
-  }
+  setTimeout(() => schedule(remain, elapsed), MIN_START_DELAY_MS);
 });
+  
 
 /* ---------- MP3 events: status netjes houden ---------- */
 mp3.addEventListener('ended', () => {
