@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, re, subprocess, shlex, pathlib, tempfile
+import os, json, re, subprocess, shlex, pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SESSIONS_JSON = REPO_ROOT / "tools" / "sessions.json"
@@ -12,11 +12,13 @@ for p in TMP_DIR.glob("*.wav"):
     try: p.unlink()
     except: pass
 
-# ===== TTS instellingen (te overriden via env in CI) =====
-ESPEAK_VOICE = os.getenv("ESPEAK_VOICE", "nl")
-ESPEAK_RATE  = int(os.getenv("ESPEAK_RATE", "140"))
-ESPEAK_PITCH = int(os.getenv("ESPEAK_PITCH", "30"))
-ESPEAK_GAIN  = int(os.getenv("ESPEAK_GAIN", "175"))
+# ===== TTS instellingen (override via env mogelijk) =====
+ESPEAK_VOICE = os.getenv("ESPEAK_VOICE", "nl")      # bv: "nl", "nl+m3", "nl+f3"
+ESPEAK_RATE  = int(os.getenv("ESPEAK_RATE",  "175"))# woorden/min
+ESPEAK_PITCH = int(os.getenv("ESPEAK_PITCH", "30")) # 0..99
+ESPEAK_GAIN  = int(os.getenv("ESPEAK_GAIN",  "175"))# 0..200 (volume)
+ESPEAK_WORDGAP = int(os.getenv("ESPEAK_WORDGAP", "2"))  # 10ms units (2=20ms)
+ESPEAK_NOSENTPAUSE = os.getenv("ESPEAK_NOSENTPAUSE", "1") == "1"  # -z
 
 def run(cmd: str):
     subprocess.check_call(cmd, shell=True)
@@ -41,11 +43,15 @@ def tts_wav(text: str, out_path: pathlib.Path):
         "-s", str(ESPEAK_RATE),
         "-p", str(ESPEAK_PITCH),
         "-a", str(ESPEAK_GAIN),
+        "-g", str(ESPEAK_WORDGAP),
         "-w", str(tmp_raw),
-        "--", text
     ]
+    if ESPEAK_NOSENTPAUSE:
+        cmd.append("-z")
+    cmd += ["--", text]
     subprocess.check_call(cmd)
-    # normaliseer naar 48k mono PCM
+
+    # normaliseer naar 48kHz mono PCM
     run(
         f"ffmpeg -y -hide_banner -loglevel error -i {shlex.quote(str(tmp_raw))} "
         f"-ar 48000 -ac 1 -c:a pcm_s16le {shlex.quote(str(out_path))}"
@@ -58,10 +64,10 @@ def concat_wavs_to_mp3(parts, out_mp3: pathlib.Path):
     with open(listfile, "w", encoding="utf-8") as f:
         for p in parts:
             f.write(f"file '{p.as_posix()}'\n")
-    # MP3 direct met libmp3lame (VBR off via re-encode stap in CI ook oké)
+    # MP3 direct, daarna in CI nogmaals CBR 44.1 kHz (iOS-safe)
     run(f"ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listfile))} -c:a libmp3lame -b:a 128k -loglevel error {shlex.quote(str(out_mp3))}")
 
-# ===== Sessies laden =====
+# ===== Sessies =====
 if not SESSIONS_JSON.exists():
     raise SystemExit("tools/sessions.json niet gevonden")
 SESSIONS = json.loads(SESSIONS_JSON.read_text(encoding="utf-8"))
@@ -69,7 +75,7 @@ if not isinstance(SESSIONS, list) or not SESSIONS:
     raise SystemExit("tools/sessions.json is leeg of ongeldig")
 
 print(f"Gevonden sessies: {len(SESSIONS)}")
-print(f"TTS → voice={ESPEAK_VOICE}, rate={ESPEAK_RATE}, pitch={ESPEAK_PITCH}, gain={ESPEAK_GAIN}")
+print(f"TTS → voice={ESPEAK_VOICE}, rate={ESPEAK_RATE}, pitch={ESPEAK_PITCH}, gain={ESPEAK_GAIN}, wordgap={ESPEAK_WORDGAP}, nosentpause={ESPEAK_NOSENTPAUSE}")
 
 beep_wav = TMP_DIR / "beep.wav"
 if not beep_wav.exists(): make_beep(beep_wav)
@@ -100,7 +106,7 @@ for sess in SESSIONS:
 
         seg = TMP_DIR / f"seg_{i:04d}.wav"; tts_wav(txt, seg); parts.append(seg)
 
-        # update pointer met echte duur
+        # pointer bijwerken op basis van echte duur
         try:
             probe = subprocess.check_output(f"ffprobe -v quiet -of json -show_streams {shlex.quote(str(seg))}", shell=True)
             dur = float(json.loads(probe)["streams"][0]["duration"]); now_t += dur
