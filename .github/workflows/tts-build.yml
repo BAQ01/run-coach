@@ -17,9 +17,8 @@ jobs:
   build-audio:
     runs-on: ubuntu-latest
     env:
-      # TTS-instellingen (kun je hier aanpassen)
       ESPEAK_VOICE: "nl"
-      ESPEAK_RATE: "140"    # bijv. 130/150 naar smaak
+      ESPEAK_RATE: "140"
       ESPEAK_PITCH: "30"
       ESPEAK_GAIN: "175"
 
@@ -27,7 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # nodig om te kunnen pushen
+          fetch-depth: 0
 
       - name: Install deps (ffmpeg, espeak-ng, python)
         run: |
