@@ -81,7 +81,6 @@ export default function ActiveRunScreen({ session, onDone }) {
     prevIntervalIndexRef.current = -1
     await audio.start(handleTick)
     setRunState(WorkoutState.WARMUP)
-    audio.speakCue('Training gestart. Succes!')
   }, [audio, handleTick])
 
   // ── Pause / Resume ─────────────────────────────────────────────────────────
@@ -89,7 +88,6 @@ export default function ActiveRunScreen({ session, onDone }) {
     if (paused) {
       await audio.resume()
       setPaused(false)
-      audio.speakCue('Doorgaan!')
     } else {
       await audio.pause()
       setPaused(true)
