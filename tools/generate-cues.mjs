@@ -1,11 +1,14 @@
 /**
  * generate-cues.mjs
- * Genereert MP3-bestanden voor alle coaching cues via OpenAI TTS.
+ * Genereert MP3-bestanden voor alle coaching cues via ElevenLabs TTS.
  *
  * Gebruik:
- *   OPENAI_API_KEY=sk-... node tools/generate-cues.mjs
+ *   ELEVENLABS_API_KEY=... node tools/generate-cues.mjs
  *
  * Output: public/audio/cues/<slug>.mp3
+ *
+ * Gratis stemmen bekijken: https://elevenlabs.io/voice-library
+ * Default stem: "Charlotte" (NL/EU accent, multilingual v2)
  */
 
 import fs from 'fs'
@@ -25,11 +28,16 @@ const CUES = [
   'Wandelinterval. Herstel voor de volgende run.',
 ]
 
-const API_KEY = process.env.OPENAI_API_KEY
+const API_KEY = process.env.ELEVENLABS_API_KEY
 if (!API_KEY) {
-  console.error('Zet OPENAI_API_KEY als omgevingsvariabele.')
+  console.error('Zet ELEVENLABS_API_KEY als omgevingsvariabele.')
   process.exit(1)
 }
+
+// Charlotte - natuurlijke Europese stem, ondersteunt Nederlands via multilingual v2
+// Andere opties: https://api.elevenlabs.io/v1/voices
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID ?? 'XB0fDUnXU5powFXDhCwa'
+const MODEL_ID = 'eleven_multilingual_v2'
 
 const OUTPUT_DIR = path.join(process.cwd(), 'public', 'audio', 'cues')
 fs.mkdirSync(OUTPUT_DIR, { recursive: true })
@@ -52,20 +60,25 @@ async function generateCue(text) {
   }
 
   const body = JSON.stringify({
-    model: 'tts-1',
-    input: text,
-    voice: 'nova',
-    response_format: 'mp3',
+    text,
+    model_id: MODEL_ID,
+    voice_settings: {
+      stability: 0.5,
+      similarity_boost: 0.75,
+      style: 0.3,
+      use_speaker_boost: true,
+    },
   })
 
   return new Promise((resolve, reject) => {
     const req = https.request({
-      hostname: 'api.openai.com',
-      path: '/v1/audio/speech',
+      hostname: 'api.elevenlabs.io',
+      path: `/v1/text-to-speech/${VOICE_ID}`,
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${API_KEY}`,
+        'xi-api-key': API_KEY,
         'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg',
         'Content-Length': Buffer.byteLength(body),
       },
     }, (res) => {
