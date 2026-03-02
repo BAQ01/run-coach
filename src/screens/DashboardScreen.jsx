@@ -13,6 +13,7 @@ const GOAL_LABELS = {
 export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refreshKey }) {
   const { user, signOut } = useAuth()
   const [logsByPlan, setLogsByPlan] = useState({})
+  const [refresh, setRefresh] = useState(0)
 
   useEffect(() => {
     if (!user) return
@@ -29,7 +30,22 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
         })
         setLogsByPlan(grouped)
       })
-  }, [user?.id, refreshKey])
+  }, [user?.id, refreshKey, refresh])
+
+  const handleMarkDone = async (plan, session) => {
+    if (!user) return
+    await supabase.from('workout_logs').insert({
+      user_id: user.id,
+      plan_id: plan.id,
+      session_number: session.sessionNumber,
+      week: session.week,
+      day: session.day,
+      duration_seconds: 0,
+      rpe_score: 5,
+      completed_at: new Date().toISOString(),
+    })
+    setRefresh(r => r + 1)
+  }
 
   const totalWorkouts = Object.values(logsByPlan).reduce((sum, arr) => sum + arr.length, 0)
   const activePlans = plans.filter(p => {
@@ -84,6 +100,7 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
               plan={plan}
               completed={logsByPlan[plan.id] ?? []}
               onStartWorkout={onStartWorkout}
+              onMarkDone={(session) => handleMarkDone(plan, session)}
             />
           ))
         )}
@@ -108,7 +125,7 @@ function StatBox({ label, value }) {
   )
 }
 
-function PlanCard({ plan, completed, onStartWorkout }) {
+function PlanCard({ plan, completed, onStartWorkout, onMarkDone }) {
   const [showAll, setShowAll] = useState(false)
 
   const sessions = plan.sessions ?? []
@@ -217,6 +234,7 @@ function PlanCard({ plan, completed, onStartWorkout }) {
               completed={completed}
               nextSessionNumber={nextSession?.sessionNumber}
               onStartWorkout={(s) => onStartWorkout(plan, s)}
+              onMarkDone={onMarkDone}
             />
           ))}
         </div>
@@ -225,7 +243,7 @@ function PlanCard({ plan, completed, onStartWorkout }) {
   )
 }
 
-function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout }) {
+function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout, onMarkDone }) {
   const weekCompleted = sessions.every(s => completed.includes(s.sessionNumber))
 
   return (
@@ -273,14 +291,23 @@ function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout 
                 {s.totalMinutes}m
               </div>
 
-              {/* Start knop voor volgende sessie */}
-              {isNext && (
-                <button
-                  onClick={() => onStartWorkout(s)}
-                  className="shrink-0 bg-[#39FF14] text-black text-xs font-black px-3 py-1.5 rounded-lg active:scale-95 transition-transform"
-                >
-                  START
-                </button>
+              {/* Knoppen voor incomplete sessies */}
+              {!isCompleted && (
+                <div className="flex gap-1 shrink-0">
+                  <button
+                    onClick={() => onStartWorkout(s)}
+                    className="bg-[#39FF14] text-black text-xs font-black px-3 py-1.5 rounded-lg active:scale-95 transition-transform"
+                  >
+                    START
+                  </button>
+                  <button
+                    onClick={() => onMarkDone(s)}
+                    className="bg-gray-800 text-gray-400 text-xs font-bold px-2.5 py-1.5 rounded-lg active:scale-95 transition-transform"
+                    title="Markeer als gedaan"
+                  >
+                    ✓
+                  </button>
+                </div>
               )}
             </div>
           )
