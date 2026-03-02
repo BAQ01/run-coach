@@ -60,7 +60,7 @@ export default function ActiveRunScreen({ session, onDone }) {
       if (!firedCuesRef.current.has(key) && elapsedSeconds >= cue.triggerAt) {
         firedCuesRef.current.add(key)
         if (cue.type === 'speech' && cue.message) {
-          audio.speakCue(cue.message)
+          audio.playCueOrSpeak(cue.message)
         } else if (cue.type === 'beep') {
           audio.playBeep(660, 0.1, 0.4)
         }
@@ -70,7 +70,7 @@ export default function ActiveRunScreen({ session, onDone }) {
     // Done
     if (result.state === WorkoutState.DONE) {
       audio.stop()
-      audio.speakCue('Training voltooid! Geweldig werk!')
+      audio.playCueOrSpeak('Training voltooid! Geweldig werk!')
       setTimeout(() => onDone(elapsedSeconds), 1500)
     }
   }, [intervals, audio, onDone])

@@ -130,6 +130,27 @@ export function useAudioEngine() {
     window.speechSynthesis.speak(utterance)
   }, [])
 
+  // ─── MP3 cue afspelen, met Web Speech als fallback ───────────────────────
+
+  const playCueOrSpeak = useCallback(async (text) => {
+    const slug = text.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .slice(0, 60)
+    const url = `/audio/cues/${slug}.mp3`
+    try {
+      const res = await fetch(url, { method: 'HEAD' })
+      if (res.ok) {
+        await playCue(url)
+      } else {
+        speakCue(text)
+      }
+    } catch {
+      speakCue(text)
+    }
+  }, [playCue, speakCue])
+
   // ─── Nauwkeurige klok gebaseerd op AudioContext.currentTime ──────────────
 
   const getElapsedSeconds = useCallback(() => {
@@ -202,5 +223,5 @@ export function useAudioEngine() {
     }
   }, [stop])
 
-  return { start, stop, pause, resume, playCue, playBeep, speakCue, getElapsedSeconds, initContext }
+  return { start, stop, pause, resume, playCue, playBeep, speakCue, playCueOrSpeak, getElapsedSeconds, initContext }
 }

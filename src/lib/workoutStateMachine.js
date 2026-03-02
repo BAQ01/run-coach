@@ -83,7 +83,7 @@ export function buildCueTimeline(intervals) {
     if (interval.type === 'run' && interval.durationSeconds > 60) {
       cues.push({
         triggerAt: t + Math.floor(interval.durationSeconds / 2),
-        message: 'Halfway, keep going!',
+        message: 'Halverwege, ga door!',
         type: 'speech',
         intervalIndex: i,
       })
@@ -105,29 +105,37 @@ export function buildCueTimeline(intervals) {
   return cues
 }
 
+const RUN_MSGS = [
+  'Start met lopen. Ga ervoor!',
+  'Rennen nu! Je kunt dit!',
+  'Loop nu. Houd je tempo.',
+]
+
+const WALK_MSGS = [
+  'Wandelen nu. Herstel, adem rustig.',
+  'Loop even bij. Goed bezig!',
+  'Wandelinterval. Herstel voor de volgende run.',
+]
+
 function intervalStartMessage(interval, index, intervals) {
   if (interval.type === 'warmup') return 'Start je warming-up. Loop rustig mee.'
-  if (interval.type === 'cooldown') return 'Goed gedaan! Begin nu met je cooling-down wandeling.'
-
-  const runCount = intervals.slice(0, index).filter(iv => iv.type === 'run').length
-
+  if (interval.type === 'cooldown') return 'Goed gedaan! Begin nu met je cooling-down.'
   if (interval.type === 'run') {
-    const msgs = [
-      `Loop-interval ${runCount + 1}. RPE doel: ${interval.rpeTarget}. Ga ervoor!`,
-      `Rennen nu! Doel RPE: ${interval.rpeTarget}. Je kunt dit!`,
-      `Run ${runCount + 1}. Houd je tempo. RPE: ${interval.rpeTarget}.`,
-    ]
-    return msgs[runCount % msgs.length]
+    const runCount = intervals.slice(0, index).filter(iv => iv.type === 'run').length
+    return RUN_MSGS[runCount % RUN_MSGS.length]
   }
-
   if (interval.type === 'walk') {
-    const msgs = [
-      'Wandelen nu. Herstel, adem rustig.',
-      'Loop even bij. Goed bezig!',
-      'Wandelinterval. Herstel voor de volgende run.',
-    ]
-    return msgs[Math.floor(index / 2) % msgs.length]
+    const walkCount = intervals.slice(0, index).filter(iv => iv.type === 'walk').length
+    return WALK_MSGS[walkCount % WALK_MSGS.length]
   }
-
   return 'Volgende interval.'
 }
+
+export const ALL_CUES = [
+  'Start je warming-up. Loop rustig mee.',
+  'Goed gedaan! Begin nu met je cooling-down.',
+  'Halverwege, ga door!',
+  'Training voltooid! Geweldig werk!',
+  ...RUN_MSGS,
+  ...WALK_MSGS,
+]
