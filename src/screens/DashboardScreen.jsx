@@ -47,6 +47,16 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
     setRefresh(r => r + 1)
   }
 
+  const handleUnmarkDone = async (plan, session) => {
+    if (!user) return
+    await supabase.from('workout_logs')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('plan_id', plan.id)
+      .eq('session_number', session.sessionNumber)
+    setRefresh(r => r + 1)
+  }
+
   const totalWorkouts = Object.values(logsByPlan).reduce((sum, arr) => sum + arr.length, 0)
   const activePlans = plans.filter(p => {
     const sessions = p.sessions ?? []
@@ -101,6 +111,7 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
               completed={logsByPlan[plan.id] ?? []}
               onStartWorkout={onStartWorkout}
               onMarkDone={(session) => handleMarkDone(plan, session)}
+              onUnmarkDone={(session) => handleUnmarkDone(plan, session)}
             />
           ))
         )}
@@ -125,7 +136,7 @@ function StatBox({ label, value }) {
   )
 }
 
-function PlanCard({ plan, completed, onStartWorkout, onMarkDone }) {
+function PlanCard({ plan, completed, onStartWorkout, onMarkDone, onUnmarkDone }) {
   const [showAll, setShowAll] = useState(false)
 
   const sessions = plan.sessions ?? []
@@ -235,6 +246,7 @@ function PlanCard({ plan, completed, onStartWorkout, onMarkDone }) {
               nextSessionNumber={nextSession?.sessionNumber}
               onStartWorkout={(s) => onStartWorkout(plan, s)}
               onMarkDone={onMarkDone}
+              onUnmarkDone={onUnmarkDone}
             />
           ))}
         </div>
@@ -243,7 +255,7 @@ function PlanCard({ plan, completed, onStartWorkout, onMarkDone }) {
   )
 }
 
-function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout, onMarkDone }) {
+function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout, onMarkDone, onUnmarkDone }) {
   const weekCompleted = sessions.every(s => completed.includes(s.sessionNumber))
 
   return (
@@ -291,8 +303,16 @@ function WeekRow({ week, sessions, completed, nextSessionNumber, onStartWorkout,
                 {s.totalMinutes}m
               </div>
 
-              {/* Knoppen voor incomplete sessies */}
-              {!isCompleted && (
+              {/* Knoppen */}
+              {isCompleted ? (
+                <button
+                  onClick={() => onUnmarkDone(s)}
+                  className="shrink-0 bg-gray-800 text-gray-600 text-xs font-bold px-2.5 py-1.5 rounded-lg active:scale-95 transition-transform"
+                  title="Markeer als niet gedaan"
+                >
+                  ↩
+                </button>
+              ) : (
                 <div className="flex gap-1 shrink-0">
                   <button
                     onClick={() => onStartWorkout(s)}
