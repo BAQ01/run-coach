@@ -4,15 +4,38 @@
  * Strategie:
  * 1. Wall-clock timer (Date.now) — AudioContext.currentTime bevriest bij tab-switch/iOS
  * 2. Pre-schedule alle audio via Web Audio tijdlijn zodat ze spelen in de achtergrond
- * 3. visibilitychange: hervatten + toekomstige cues opnieuw inplannen als nodig
- * 4. Stille oscillator + MediaSession API → iOS herkent actieve audio sessie
+ * 3. Stille <audio> loop → houdt de iOS audio-sessie actief achter het lock screen
+ * 4. visibilitychange: hervatten + toekomstige cues opnieuw inplannen als nodig
+ * 5. MediaSession API → iOS toont media controls op lock screen
  */
 
 import { useRef, useCallback, useEffect } from 'react'
 
+// Genereer een 1-seconde stille WAV als data-URL.
+// De <audio> loop met deze WAV houdt de iOS audio sessie actief achter het lock screen.
+function makeSilentWavUrl() {
+  const sr = 8000
+  const buf = new ArrayBuffer(44 + sr)
+  const v = new DataView(buf)
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)) }
+  w(0, 'RIFF'); v.setUint32(4, 36 + sr, true); w(8, 'WAVE')
+  w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true)
+  v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr, true)
+  v.setUint16(32, 1, true); v.setUint16(34, 8, true)
+  w(36, 'data'); v.setUint32(40, sr, true)
+  new Uint8Array(buf).fill(0x80, 44) // 0x80 = stille DC in unsigned 8-bit PCM
+  let bin = ''
+  const bytes = new Uint8Array(buf)
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return 'data:audio/wav;base64,' + btoa(bin)
+}
+
+const SILENT_WAV_URL = makeSilentWavUrl()
+
 export function useAudioEngine() {
   const ctxRef = useRef(null)
   const silentNodeRef = useRef(null)
+  const silentHtmlAudioRef = useRef(null) // <audio> loop voor iOS lock screen
   const bufferCacheRef = useRef({})
   const scheduledAudioRef = useRef([])    // Geplande audio nodes (voor annulering)
 
@@ -61,6 +84,26 @@ export function useAudioEngine() {
       silentNodeRef.current.gain.disconnect()
     } catch (_) {}
     silentNodeRef.current = null
+  }, [])
+
+  // ─── HTML <audio> loop (iOS lock screen trick) ────────────────────────────
+  // iOS beëindigt de Web Audio sessie zodra het scherm vergrendelt, tenzij er
+  // een actief HTML audio element speelt. Deze stille loop voorkomt dat.
+
+  const startHtmlAudioLoop = useCallback(() => {
+    if (silentHtmlAudioRef.current) return
+    const audio = new Audio(SILENT_WAV_URL)
+    audio.loop = true
+    audio.volume = 0.001
+    audio.play().catch(() => {})
+    silentHtmlAudioRef.current = audio
+  }, [])
+
+  const stopHtmlAudioLoop = useCallback(() => {
+    if (!silentHtmlAudioRef.current) return
+    silentHtmlAudioRef.current.pause()
+    silentHtmlAudioRef.current.src = ''
+    silentHtmlAudioRef.current = null
   }, [])
 
   // ─── Audio buffer laden & cachen ─────────────────────────────────────────
@@ -229,7 +272,10 @@ export function useAudioEngine() {
       scheduleAudioCues(cueTimeline, voice, ctx.currentTime)
     }
 
-    // MediaSession API → iOS herkent actieve audio sessie
+    // HTML audio loop → houdt iOS audio sessie actief achter lock screen
+    startHtmlAudioLoop()
+
+    // MediaSession API → iOS toont media controls op lock screen
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: 'Run Coach Training' })
       navigator.mediaSession.playbackState = 'playing'
@@ -263,7 +309,7 @@ export function useAudioEngine() {
     }, 500)
 
     return ctx
-  }, [initContext, startSilentLoop, getElapsedSeconds, scheduleAudioCues, rescheduleFutureCues])
+  }, [initContext, startSilentLoop, startHtmlAudioLoop, getElapsedSeconds, scheduleAudioCues, rescheduleFutureCues])
 
   // ─── Stop ─────────────────────────────────────────────────────────────────
 
@@ -280,12 +326,13 @@ export function useAudioEngine() {
       navigator.mediaSession.playbackState = 'none'
     }
 
+    stopHtmlAudioLoop()
     stopSilentLoop()
     tickCallbackRef.current = null
     startWallRef.current = null
     pausedMsRef.current = 0
     pauseAtRef.current = null
-  }, [stopSilentLoop, cancelScheduledAudio])
+  }, [stopSilentLoop, stopHtmlAudioLoop, cancelScheduledAudio])
 
   // ─── Pause / Resume ───────────────────────────────────────────────────────
 
@@ -295,8 +342,9 @@ export function useAudioEngine() {
     pauseAtRef.current = Date.now()
     clearInterval(tickIntervalRef.current)
     await ctx.suspend()
+    stopHtmlAudioLoop()
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
-  }, [])
+  }, [stopHtmlAudioLoop])
 
   const resume = useCallback(async () => {
     const ctx = ctxRef.current
@@ -306,12 +354,13 @@ export function useAudioEngine() {
       pauseAtRef.current = null
     }
     await ctx.resume()
+    startHtmlAudioLoop()
     rescheduleFutureCues()
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'
     tickIntervalRef.current = setInterval(() => {
       if (tickCallbackRef.current) tickCallbackRef.current(getElapsedSeconds())
     }, 500)
-  }, [getElapsedSeconds, rescheduleFutureCues])
+  }, [getElapsedSeconds, rescheduleFutureCues, startHtmlAudioLoop])
 
   // ─── Cleanup bij unmount ─────────────────────────────────────────────────
 
