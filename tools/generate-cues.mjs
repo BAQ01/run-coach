@@ -5,10 +5,13 @@
  * Gebruik:
  *   ELEVENLABS_API_KEY=... node tools/generate-cues.mjs
  *
- * Output: public/audio/cues/<slug>.mp3
+ * Output: public/audio/cues/<voice>/<slug>.mp3
  *
- * Gratis stemmen bekijken: https://elevenlabs.io/voice-library
- * Default stem: "Charlotte" (NL/EU accent, multilingual v2)
+ * Stemmen:
+ *   Rebecca - Charlotte  (vrouw, Europees accent)
+ *   Sarah   - Matilda    (vrouw, warm)
+ *   Pieter  - Daniel     (man, helder)
+ *   Rik     - George     (man, energiek)
  */
 
 import fs from 'fs'
@@ -28,19 +31,21 @@ const CUES = [
   'Wandelinterval. Herstel voor de volgende run.',
 ]
 
+const VOICES = [
+  { name: 'rebecca', id: 'XB0fDUnXU5powFXDhCwa' }, // Charlotte - vrouw, Europees
+  { name: 'sarah',   id: 'XrExE9yKIg1WjnnlVkGX' }, // Matilda   - vrouw, warm
+  { name: 'pieter',  id: 'onwK4e9ZLuTAKqWW03F9' }, // Daniel    - man, helder
+  { name: 'rik',     id: 'JBFqnCBsd6RMkjVDRZzb' }, // George    - man, energiek
+]
+
 const API_KEY = process.env.ELEVENLABS_API_KEY
 if (!API_KEY) {
   console.error('Zet ELEVENLABS_API_KEY als omgevingsvariabele.')
   process.exit(1)
 }
 
-// Charlotte - natuurlijke Europese stem, ondersteunt Nederlands via multilingual v2
-// Andere opties: https://api.elevenlabs.io/v1/voices
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID ?? 'XB0fDUnXU5powFXDhCwa'
 const MODEL_ID = 'eleven_multilingual_v2'
-
-const OUTPUT_DIR = path.join(process.cwd(), 'public', 'audio', 'cues')
-fs.mkdirSync(OUTPUT_DIR, { recursive: true })
+const BASE_DIR = path.join(process.cwd(), 'public', 'audio', 'cues')
 
 function slugify(text) {
   return text.toLowerCase()
@@ -50,12 +55,9 @@ function slugify(text) {
     .slice(0, 60)
 }
 
-async function generateCue(text) {
-  const slug = slugify(text)
-  const outPath = path.join(OUTPUT_DIR, `${slug}.mp3`)
-
+async function generateCue(text, voiceId, outPath) {
   if (fs.existsSync(outPath)) {
-    console.log(`⏭  Bestaat al: ${slug}.mp3`)
+    console.log(`  ⏭  Bestaat al: ${path.basename(outPath)}`)
     return
   }
 
@@ -73,7 +75,7 @@ async function generateCue(text) {
   return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: 'api.elevenlabs.io',
-      path: `/v1/text-to-speech/${VOICE_ID}`,
+      path: `/v1/text-to-speech/${voiceId}`,
       method: 'POST',
       headers: {
         'xi-api-key': API_KEY,
@@ -91,7 +93,7 @@ async function generateCue(text) {
       const file = fs.createWriteStream(outPath)
       res.pipe(file)
       file.on('finish', () => {
-        console.log(`✓  ${slug}.mp3`)
+        console.log(`  ✓  ${path.basename(outPath)}`)
         resolve()
       })
     })
@@ -101,8 +103,14 @@ async function generateCue(text) {
   })
 }
 
-console.log(`Genereer ${CUES.length} cues naar ${OUTPUT_DIR}\n`)
-for (const cue of CUES) {
-  await generateCue(cue)
+for (const voice of VOICES) {
+  const dir = path.join(BASE_DIR, voice.name)
+  fs.mkdirSync(dir, { recursive: true })
+  console.log(`\n🎙  ${voice.name} (${voice.id})`)
+  for (const cue of CUES) {
+    const outPath = path.join(dir, `${slugify(cue)}.mp3`)
+    await generateCue(cue, voice.id, outPath)
+  }
 }
+
 console.log('\nKlaar!')

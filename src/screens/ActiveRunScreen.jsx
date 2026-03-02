@@ -2,6 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAudioEngine } from '../hooks/useAudioEngine'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
 
+const VOICES = [
+  { id: 'rebecca', label: 'Rebecca', gender: 'V' },
+  { id: 'sarah',   label: 'Sarah',   gender: 'V' },
+  { id: 'pieter',  label: 'Pieter',  gender: 'M' },
+  { id: 'rik',     label: 'Rik',     gender: 'M' },
+]
+
 function intervalTypeToState(type) {
   const map = { warmup: WorkoutState.WARMUP, run: WorkoutState.RUN, walk: WorkoutState.WALK, cooldown: WorkoutState.COOLDOWN }
   return map[type] ?? WorkoutState.RUN
@@ -17,6 +24,7 @@ const STATE_CONFIG = {
 
 export default function ActiveRunScreen({ session, onDone }) {
   const audio = useAudioEngine()
+  const [voice, setVoice] = useState(() => localStorage.getItem('coachVoice') ?? 'rebecca')
   const [runState, setRunState] = useState(WorkoutState.IDLE)
   const [paused, setPaused] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -27,6 +35,11 @@ export default function ActiveRunScreen({ session, onDone }) {
   const cueTimelineRef = useRef([])
   const firedCuesRef = useRef(new Set())
   const prevIntervalIndexRef = useRef(-1)
+
+  const handleVoiceChange = useCallback((v) => {
+    setVoice(v)
+    localStorage.setItem('coachVoice', v)
+  }, [])
 
   const intervals = session.intervals
 
@@ -60,7 +73,7 @@ export default function ActiveRunScreen({ session, onDone }) {
       if (!firedCuesRef.current.has(key) && elapsedSeconds >= cue.triggerAt) {
         firedCuesRef.current.add(key)
         if (cue.type === 'speech' && cue.message) {
-          audio.playCueOrSpeak(cue.message)
+          audio.playCueOrSpeak(cue.message, voice)
         } else if (cue.type === 'beep') {
           audio.playBeep(660, 0.1, 0.4)
         }
@@ -70,10 +83,10 @@ export default function ActiveRunScreen({ session, onDone }) {
     // Done
     if (result.state === WorkoutState.DONE) {
       audio.stop()
-      audio.playCueOrSpeak('Training voltooid! Geweldig werk!')
+      audio.playCueOrSpeak('Training voltooid! Geweldig werk!', voice)
       setTimeout(() => onDone(elapsedSeconds), 1500)
     }
-  }, [intervals, audio, onDone])
+  }, [intervals, audio, onDone, voice])
 
   // ── Start ─────────────────────────────────────────────────────────────────
   const handleStart = useCallback(async () => {
@@ -147,6 +160,27 @@ export default function ActiveRunScreen({ session, onDone }) {
             {intervals.length > 6 && (
               <p className="text-gray-700 text-xs text-center">+ {intervals.length - 6} meer intervallen</p>
             )}
+          </div>
+
+          {/* Stemkeuze */}
+          <div className="w-full max-w-xs mb-6">
+            <p className="text-gray-500 text-xs text-center mb-2 uppercase tracking-wider">Coach stem</p>
+            <div className="grid grid-cols-4 gap-2">
+              {VOICES.map(v => (
+                <button
+                  key={v.id}
+                  onClick={() => handleVoiceChange(v.id)}
+                  className={`py-2 rounded-xl text-xs font-bold transition-all active:scale-95 ${
+                    voice === v.id
+                      ? 'bg-[#39FF14] text-black'
+                      : 'bg-gray-900 text-gray-400 border border-gray-800'
+                  }`}
+                >
+                  <div>{v.label}</div>
+                  <div className="text-[10px] opacity-60">{v.gender}</div>
+                </button>
+              ))}
+            </div>
           </div>
 
           <button

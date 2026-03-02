@@ -132,13 +132,13 @@ export function useAudioEngine() {
 
   // ─── MP3 cue afspelen, met Web Speech als fallback ───────────────────────
 
-  const playCueOrSpeak = useCallback(async (text) => {
+  const playCueOrSpeak = useCallback(async (text, voice = 'rebecca') => {
     const slug = text.toLowerCase()
       .replace(/[^a-z0-9\s]/g, '')
       .trim()
       .replace(/\s+/g, '-')
       .slice(0, 60)
-    const url = `/audio/cues/${slug}.mp3`
+    const url = `/audio/cues/${voice}/${slug}.mp3`
     try {
       const res = await fetch(url, { method: 'HEAD' })
       if (res.ok) {
