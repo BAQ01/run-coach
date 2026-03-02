@@ -102,6 +102,14 @@ export function buildCueTimeline(intervals) {
     t += interval.durationSeconds
   })
 
+  // Afsluitende cue
+  cues.push({
+    triggerAt: t,
+    message: 'Training voltooid! Geweldig werk!',
+    type: 'speech',
+    intervalIndex: intervals.length,
+  })
+
   return cues
 }
 

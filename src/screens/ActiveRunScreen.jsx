@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useAudioEngine } from '../hooks/useAudioEngine'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
 
@@ -32,10 +32,6 @@ export default function ActiveRunScreen({ session, onDone }) {
   const [intervalRemaining, setIntervalRemaining] = useState(0)
   const [showStopConfirm, setShowStopConfirm] = useState(false)
 
-  const cueTimelineRef = useRef([])
-  const firedCuesRef = useRef(new Set())
-  const prevIntervalIndexRef = useRef(-1)
-
   const handleVoiceChange = useCallback((v) => {
     setVoice(v)
     localStorage.setItem('coachVoice', v)
@@ -43,58 +39,26 @@ export default function ActiveRunScreen({ session, onDone }) {
 
   const intervals = session.intervals
 
-  // ── Cue timeline voorbereiden ─────────────────────────────────────────────
-  useEffect(() => {
-    cueTimelineRef.current = buildCueTimeline(intervals)
-  }, [intervals])
-
-  // ── Tick handler (aangeroepen door AudioEngine elke ~0.5s) ────────────────
+  // ── Tick handler – alleen UI updates, audio is pre-scheduled ─────────────
   const handleTick = useCallback((elapsedSeconds) => {
     setElapsed(elapsedSeconds)
-
     const result = resolveWorkoutState(elapsedSeconds, intervals)
     setRunState(result.state)
     setCurrentInterval(result.interval)
     setIntervalRemaining(result.intervalRemaining ?? 0)
 
-    // Interval-overgang detecteren
-    if (result.intervalIndex !== prevIntervalIndexRef.current) {
-      prevIntervalIndexRef.current = result.intervalIndex
-      if (result.state === WorkoutState.RUN) {
-        audio.playBeep(880, 0.15, 0.6)
-      } else if (result.state === WorkoutState.WALK) {
-        audio.playBeep(440, 0.2, 0.5)
-      }
-    }
-
-    // Audiocues afvuren op het juiste moment
-    cueTimelineRef.current.forEach((cue) => {
-      const key = `${cue.triggerAt}-${cue.intervalIndex}`
-      if (!firedCuesRef.current.has(key) && elapsedSeconds >= cue.triggerAt) {
-        firedCuesRef.current.add(key)
-        if (cue.type === 'speech' && cue.message) {
-          audio.playCueOrSpeak(cue.message, voice)
-        } else if (cue.type === 'beep') {
-          audio.playBeep(660, 0.1, 0.4)
-        }
-      }
-    })
-
-    // Done
     if (result.state === WorkoutState.DONE) {
       audio.stop()
-      audio.playCueOrSpeak('Training voltooid! Geweldig werk!', voice)
       setTimeout(() => onDone(elapsedSeconds), 1500)
     }
-  }, [intervals, audio, onDone, voice])
+  }, [intervals, audio, onDone])
 
-  // ── Start ─────────────────────────────────────────────────────────────────
+  // ── Start – geeft cue-timeline + stem door aan de audio engine ────────────
   const handleStart = useCallback(async () => {
-    firedCuesRef.current = new Set()
-    prevIntervalIndexRef.current = -1
-    await audio.start(handleTick)
+    const cueTimeline = buildCueTimeline(intervals)
+    await audio.start(handleTick, cueTimeline, voice)
     setRunState(WorkoutState.WARMUP)
-  }, [audio, handleTick])
+  }, [audio, handleTick, intervals, voice])
 
   // ── Pause / Resume ─────────────────────────────────────────────────────────
   const handlePause = useCallback(async () => {
