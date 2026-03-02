@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { generateGallowaySchema } from '../lib/galloway'
 
 const GOALS = [
   { id: 'couch_to_30', label: 'Bank → 30 min doorlopen', emoji: '🛋️', description: 'Volledig beginners' },
@@ -22,34 +23,25 @@ export default function OnboardingScreen({ onComplete, onCancel }) {
     setError(null)
 
     try {
-      const { data: { session: currentSession } } = await supabase.auth.getSession()
-      const token = currentSession?.access_token
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Niet ingelogd')
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-schema`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({ goal: goal.id, daysPerWeek, currentLevel: level }),
-      })
+      const schema = generateGallowaySchema({ goal: goal.id, daysPerWeek, currentLevel: level })
 
-      let data
-      try {
-        data = await res.json()
-      } catch {
-        throw new Error(`Server fout (HTTP ${res.status})`)
-      }
+      const { data: plan, error: dbError } = await supabase
+        .from('training_plans')
+        .insert({
+          user_id: user.id,
+          goal: goal.id,
+          days_per_week: daysPerWeek,
+          current_level: level,
+          sessions: schema.sessions,
+        })
+        .select()
+        .single()
 
-      if (!res.ok) {
-        const msg = data?.error || data?.message || `Fout ${res.status}`
-        const detail = data?.detail ? ` — ${data.detail}` : ''
-        throw new Error(msg + detail)
-      }
-
-      if (!data.plan) throw new Error('Geen schema ontvangen van server')
-      onComplete(data.plan)
+      if (dbError) throw new Error(dbError.message)
+      onComplete(plan)
     } catch (err) {
       setError(err.message)
     } finally {
