@@ -11,7 +11,7 @@ const GOAL_LABELS = {
 }
 
 export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refreshKey }) {
-  const { user } = useAuth()
+  const { user, signOut } = useAuth()
   const [logsByPlan, setLogsByPlan] = useState({})
 
   useEffect(() => {
@@ -42,11 +42,19 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
     <div className="min-h-screen bg-black text-white flex flex-col">
 
       {/* Header */}
-      <header className="px-5 pt-6 pb-2">
-        <h1 className="text-xl font-black">RUN COACH</h1>
-        <p className="text-gray-500 text-xs">
-          {plans.length} schema{plans.length !== 1 ? "'s" : ''} • {totalWorkouts} trainingen voltooid
-        </p>
+      <header className="px-5 pt-6 pb-2 flex items-start justify-between">
+        <div>
+          <h1 className="text-xl font-black">RUN COACH</h1>
+          <p className="text-gray-500 text-xs">
+            {plans.length} schema{plans.length !== 1 ? "'s" : ''} • {totalWorkouts} trainingen voltooid
+          </p>
+        </div>
+        <button
+          onClick={signOut}
+          className="text-gray-500 text-xs mt-1 hover:text-white transition-colors"
+        >
+          Uitloggen
+        </button>
       </header>
 
       {/* Statistieken */}

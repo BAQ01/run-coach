@@ -7,18 +7,10 @@ export function useAuth() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session) {
-        setSession(session)
-        setUser(session.user)
-        setLoading(false)
-      } else {
-        // Geen sessie – automatisch anoniem inloggen
-        const { data } = await supabase.auth.signInAnonymously()
-        setSession(data.session)
-        setUser(data.session?.user ?? null)
-        setLoading(false)
-      }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setUser(session?.user ?? null)
+      setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -29,5 +21,13 @@ export function useAuth() {
     return () => subscription.unsubscribe()
   }, [])
 
-  return { session, user, loading }
+  const signIn = (email, password) =>
+    supabase.auth.signInWithPassword({ email, password })
+
+  const signUp = (email, password) =>
+    supabase.auth.signUp({ email, password })
+
+  const signOut = () => supabase.auth.signOut()
+
+  return { session, user, loading, signIn, signUp, signOut }
 }

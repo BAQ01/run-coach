@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from './hooks/useAuth'
 import { supabase } from './lib/supabase'
+import AuthScreen from './screens/AuthScreen'
 import OnboardingScreen from './screens/OnboardingScreen'
 import DashboardScreen from './screens/DashboardScreen'
 import ActiveRunScreen from './screens/ActiveRunScreen'
@@ -88,6 +89,8 @@ export default function App() {
       </div>
     )
   }
+
+  if (!user) return <AuthScreen />
 
   if (view === AppView.ONBOARDING) return (
     <OnboardingScreen
