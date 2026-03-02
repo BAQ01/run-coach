@@ -32,7 +32,7 @@ export default function AuthScreen() {
         <div className="text-5xl mb-4">✉️</div>
         <h2 className="text-xl font-bold text-white mb-2">Check je email</h2>
         <p className="text-gray-400 text-sm">We hebben een bevestigingslink gestuurd naar {email}</p>
-        <button onClick={() => setMode('signin')} className="mt-6 text-[#39FF14] text-sm underline">
+        <button onClick={() => { setMode('signin'); setSuccess(false) }} className="mt-6 text-[#39FF14] text-sm underline">
           Terug naar inloggen
         </button>
       </div>
