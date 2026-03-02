@@ -5,9 +5,9 @@
 set -euo pipefail
 set +H  # Geen bash history expansion (voorkomt problemen met ! in wachtwoorden)
 
-SUPABASE_URL="https://tlhfcyhinfckyflsmjvs.supabase.co"
-ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRsaGZjeWhpbmZja3lmbHNtanZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0Mzc3ODEsImV4cCI6MjA4ODAxMzc4MX0.cxQtJlMsmxNsom-uwAwJ15aOKEIMXyOxnJXMYNmxC74"
-SERVICE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRsaGZjeWhpbmZja3lmbHNtanZzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjQzNzc4MSwiZXhwIjoyMDg4MDEzNzgxfQ.aY8WISu4P_06GlnZf0SSwxjYhulsbi90Km1frNonR9E"
+SUPABASE_URL="${SUPABASE_URL:-}"
+ANON_KEY="${ANON_KEY:-}"
+SERVICE_KEY="${SERVICE_KEY:-}"
 
 EMAIL="testuser_$(date +%s)@example.com"
 PASS="TestPass123x"
