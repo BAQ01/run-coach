@@ -196,15 +196,13 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         guard let info = notification.userInfo,
               let tv = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: tv) else { return }
-        if type == .began, startDate != nil, pauseDate == nil {
-            pauseDate = Date()
-            cancelScheduled()
-            stopTickTimer()
-            notifyListeners("interrupted", data: ["reason": "audioInterruption"])
-            saveState()
-            print("[WorkoutAudio] Onderbroken (telefoon / Siri)")
+        // De workout-klok blijft altijd lopen; alleen audio-herstel is hier relevant.
+        if type == .ended {
+            // Heractiveer de audio session zodat de volgende cue gewoon afspeelt.
+            try? AVAudioSession.sharedInstance().setActive(true)
+            print("[WorkoutAudio] Audio session hersteld na onderbreking")
         }
-        // .ended: niet automatisch hervatten — gebruiker tikt DOORGAAN
+        // .began: niets doen — workout loopt door, volgende cue speelt als de session terugkomt.
     }
 
     // MARK: - Silent keepalive loop

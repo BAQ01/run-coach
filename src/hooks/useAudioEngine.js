@@ -149,7 +149,7 @@ export function useAudioEngine() {
 
   // ── start ─────────────────────────────────────────────────────────────────
 
-  const start = useCallback(async (onTick, cueTimeline, voice, fromElapsedSeconds = 0, onInterrupted = null) => {
+  const start = useCallback(async (onTick, cueTimeline, voice, fromElapsedSeconds = 0) => {
     tickCallbackRef.current = onTick
 
     if (IS_NATIVE) {
@@ -164,10 +164,7 @@ export function useAudioEngine() {
         // Stuur een groot elapsed getal zodat resolveWorkoutState DONE retourneert
         if (tickCallbackRef.current) tickCallbackRef.current(elapsedSeconds ?? 999999)
       })
-      const interruptedL = await WorkoutAudio.addListener('interrupted', () => {
-        if (onInterrupted) onInterrupted()
-      })
-      nativeListenersRef.current = [tickL, completedL, interruptedL]
+      nativeListenersRef.current = [tickL, completedL]
 
       await WorkoutAudio.start({
         cueTimeline: (cueTimeline ?? []).map(c => ({
