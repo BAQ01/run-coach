@@ -22,15 +22,18 @@ const STATE_CONFIG = {
   [WorkoutState.DONE]:     { label: 'KLAAR!',       color: '#39FF14', bg: 'bg-black' },
 }
 
-export default function ActiveRunScreen({ session, onDone }) {
+const STORAGE_KEY = 'activeWorkout'
+
+export default function ActiveRunScreen({ session, planId, initialElapsed = 0, onDone }) {
   const audio = useAudioEngine()
   const [voice, setVoice] = useState(() => localStorage.getItem('coachVoice') ?? 'rebecca')
   const [runState, setRunState] = useState(WorkoutState.IDLE)
   const [paused, setPaused] = useState(false)
-  const [elapsed, setElapsed] = useState(0)
+  const [elapsed, setElapsed] = useState(initialElapsed)
   const [currentInterval, setCurrentInterval] = useState(null)
   const [intervalRemaining, setIntervalRemaining] = useState(0)
   const [showStopConfirm, setShowStopConfirm] = useState(false)
+  const [startError, setStartError] = useState(null)
 
   const handleVoiceChange = useCallback((v) => {
     setVoice(v)
@@ -47,18 +50,33 @@ export default function ActiveRunScreen({ session, onDone }) {
     setCurrentInterval(result.interval)
     setIntervalRemaining(result.intervalRemaining ?? 0)
 
+    // Bewaar staat elke tick zodat iOS-herstart de workout kan hervatten
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        session, planId, voice: localStorage.getItem('coachVoice') ?? 'rebecca',
+        elapsedSeconds, savedAt: Date.now(),
+      }))
+    } catch (_) {}
+
     if (result.state === WorkoutState.DONE) {
+      localStorage.removeItem(STORAGE_KEY)
       audio.stop()
       setTimeout(() => onDone(elapsedSeconds), 1500)
     }
-  }, [intervals, audio, onDone])
+  }, [intervals, audio, onDone, session, planId])
 
   // ── Start – geeft cue-timeline + stem door aan de audio engine ────────────
   const handleStart = useCallback(async () => {
-    const cueTimeline = buildCueTimeline(intervals)
-    await audio.start(handleTick, cueTimeline, voice)
-    setRunState(WorkoutState.WARMUP)
-  }, [audio, handleTick, intervals, voice])
+    setStartError(null)
+    try {
+      const cueTimeline = buildCueTimeline(intervals)
+      await audio.start(handleTick, cueTimeline, voice, initialElapsed)
+      setRunState(WorkoutState.WARMUP)
+    } catch (err) {
+      console.error('[ActiveRun] Start mislukt:', err)
+      setStartError(err?.message ?? String(err))
+    }
+  }, [audio, handleTick, intervals, voice, initialElapsed])
 
   // ── Pause / Resume ─────────────────────────────────────────────────────────
   const handlePause = useCallback(async () => {
@@ -73,6 +91,7 @@ export default function ActiveRunScreen({ session, onDone }) {
 
   // ── Stop ───────────────────────────────────────────────────────────────────
   const handleStop = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY)
     audio.stop()
     onDone(elapsed)
   }, [audio, elapsed, onDone])
@@ -147,14 +166,27 @@ export default function ActiveRunScreen({ session, onDone }) {
             </div>
           </div>
 
+          {initialElapsed > 0 && (
+            <div className="w-full max-w-xs mb-4 bg-[#39FF14]/10 border border-[#39FF14]/30 rounded-xl px-4 py-3 text-center">
+              <p className="text-[#39FF14] text-sm font-bold">Training hervat</p>
+              <p className="text-gray-400 text-xs mt-0.5">Was al {formatTime(initialElapsed)} ver</p>
+            </div>
+          )}
+
+          {startError && (
+            <div className="w-full max-w-xs mb-3 bg-red-950 border border-red-800 rounded-xl px-4 py-3 text-center">
+              <p className="text-red-400 text-xs font-mono break-all">{startError}</p>
+            </div>
+          )}
+
           <button
             onClick={handleStart}
             className="w-full bg-[#39FF14] text-black font-black py-6 rounded-2xl text-2xl tracking-widest shadow-xl shadow-[#39FF14]/30 active:scale-95 transition-all"
           >
-            START RUN
+            {initialElapsed > 0 ? 'DOORGAAN' : 'START RUN'}
           </button>
 
-          <button onClick={() => onDone(null)} className="mt-4 text-gray-600 text-sm">
+          <button onClick={() => { localStorage.removeItem(STORAGE_KEY); onDone(null) }} className="mt-4 text-gray-600 text-sm">
             Annuleren
           </button>
         </div>

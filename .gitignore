@@ -6,3 +6,4 @@ dist
 .DS_Store
 test_e2e.sh
 supabase/.temp
+Run Coach/

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
+import { version } from '../../package.json'
 
 const GOAL_LABELS = {
   couch_to_30: 'Bank → 30 min',
@@ -10,7 +11,7 @@ const GOAL_LABELS = {
   half_marathon: 'Halve Marathon',
 }
 
-export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refreshKey }) {
+export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refreshKey, resumeWorkout, onResumeWorkout }) {
   const { user, signOut } = useAuth()
   const [logsByPlan, setLogsByPlan] = useState({})
   const [refresh, setRefresh] = useState(0)
@@ -70,7 +71,7 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
       {/* Header */}
       <header className="px-5 pt-6 pb-2 flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-black">RUN COACH</h1>
+          <h1 className="text-xl font-black">RUN COACH <span className="text-gray-600 font-normal text-xs">v{version}</span></h1>
           <p className="text-gray-500 text-xs">
             {plans.length} schema{plans.length !== 1 ? "'s" : ''} • {totalWorkouts} trainingen voltooid
           </p>
@@ -82,6 +83,26 @@ export default function DashboardScreen({ plans, onStartWorkout, onNewPlan, refr
           Uitloggen
         </button>
       </header>
+
+      {/* Doorgaan met onderbroken training */}
+      {resumeWorkout && (
+        <div className="mx-5 mt-4 bg-[#39FF14]/10 border border-[#39FF14]/40 rounded-2xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[#39FF14] text-sm font-black">Training onderbroken</p>
+              <p className="text-gray-400 text-xs mt-0.5">
+                {resumeWorkout.session.description} &middot; al {Math.floor(resumeWorkout.elapsedSeconds / 60)}:{String(resumeWorkout.elapsedSeconds % 60).padStart(2, '0')} ver
+              </p>
+            </div>
+            <button
+              onClick={() => onResumeWorkout(resumeWorkout)}
+              className="bg-[#39FF14] text-black font-black text-sm px-4 py-2 rounded-xl active:scale-95 transition-transform"
+            >
+              DOORGAAN
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Statistieken */}
       {plans.length > 0 && (
