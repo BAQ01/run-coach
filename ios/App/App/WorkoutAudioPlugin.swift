@@ -136,11 +136,14 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         let startTs  = d["startTimestamp"] as? Double ?? 0
         let paused   = d["pausedInterval"] as? Double ?? 0
         let isPaused = d["isPaused"]       as? Bool   ?? false
-        let pauseTs  = d["pauseTimestamp"] as? Double ?? Date().timeIntervalSince1970
         let now      = Date().timeIntervalSince1970
-        let elapsed  = isPaused
-            ? max(0, pauseTs - startTs - paused)
-            : max(0, now - startTs - paused)
+        // pauseTimestamp is alleen aanwezig als de run gepauzeerd was; behandel als optioneel.
+        let elapsed: Double
+        if isPaused, let pauseTs = d["pauseTimestamp"] as? Double {
+            elapsed = max(0, pauseTs - startTs - paused)
+        } else {
+            elapsed = max(0, now - startTs - paused)
+        }
         call.resolve([
             "hasActiveSession": true,
             "elapsedSeconds":   elapsed,
@@ -346,16 +349,32 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
 
     private func saveState() {
         guard let start = startDate else { return }
-        let d: [String: Any] = [
+        // Bouw het dictionary op met alleen property-list-safe types (String, Double, Bool, Int, Array, Dictionary).
+        // Geen optionals via `as Any` — die crashen UserDefaults als de waarde nil is.
+        var d: [String: Any] = [
             "startTimestamp":  start.timeIntervalSince1970,
             "pausedInterval":  pausedInterval,
             "isPaused":        pauseDate != nil,
-            "pauseTimestamp":  pauseDate?.timeIntervalSince1970 as Any,
             "voice":           currentVoice,
-            "timeline":        storedTimeline,
+            "timeline":        plistSafeTimeline(storedTimeline),
             "currentCueIndex": currentCueIndex,
         ]
+        if let pd = pauseDate {
+            d["pauseTimestamp"] = pd.timeIntervalSince1970
+        }
         UserDefaults.standard.set(d, forKey: "runCoach.session")
+    }
+
+    /// Zet de cue-timeline om naar een plist-safe array.
+    /// Filtert NSNull, optionals en onbekende types eruit; behoudt alleen String en Double waarden.
+    private func plistSafeTimeline(_ timeline: [[String: Any]]) -> [[String: Any]] {
+        return timeline.map { cue in
+            var safe: [String: Any] = [:]
+            if let t = (cue["triggerAt"] as? NSNumber)?.doubleValue { safe["triggerAt"] = t }
+            if let type = cue["type"] as? String                    { safe["type"]      = type }
+            if let msg  = cue["message"] as? String                 { safe["message"]   = msg }
+            return safe
+        }
     }
 
     private func clearSavedState() {
