@@ -2,23 +2,30 @@ import Foundation
 import AVFoundation
 import Capacitor
 
-/// Native Capacitor plugin die de volledige workout audio afhandelt:
-/// - Cue scheduling via DispatchWorkItem (werkt in iOS achtergrond)
-/// - Stem cues via AVAudioPlayer (MP3 uit app bundle)
-/// - Fallback naar AVSpeechSynthesizer als een MP3 ontbreekt
-/// - Stille AVAudioPlayer loop houdt AVAudioSession actief in achtergrond
-/// - Tick events naar JS via notifyListeners("tick", ...)
+/// Native Capacitor plugin — bron van waarheid tijdens een actieve run.
+///
+/// Verantwoordelijk voor:
+///   - Wall-clock elapsed tracking (overleeft background/lock screen)
+///   - Chain scheduling: één DispatchWorkItem tegelijk, na afspelen volgt de volgende
+///   - AVAudioPlayer voor MP3 cues + AVSpeechSynthesizer als fallback
+///   - Stille keepalive loop zodat AVAudioSession actief blijft in achtergrond
+///   - Interruption handling (telefoon, Siri) → pause + interrupted event naar JS
+///   - UserDefaults persistentie → recoverActiveWorkout() na WebView-herstart of crash
+///   - Tick events (500ms) + cuePlayed / completed / interrupted events naar JS
 @objc(WorkoutAudioPlugin)
 public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDelegate {
 
     // MARK: - CAPBridgedPlugin
+
     public let identifier = "WorkoutAudioPlugin"
     public let jsName = "WorkoutAudio"
     public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "start",  returnType: "promise"),
-        CAPPluginMethod(name: "stop",   returnType: "promise"),
-        CAPPluginMethod(name: "pause",  returnType: "promise"),
-        CAPPluginMethod(name: "resume", returnType: "promise"),
+        CAPPluginMethod(name: "start",                returnType: "promise"),
+        CAPPluginMethod(name: "stop",                 returnType: "promise"),
+        CAPPluginMethod(name: "pause",                returnType: "promise"),
+        CAPPluginMethod(name: "resume",               returnType: "promise"),
+        CAPPluginMethod(name: "getStatus",            returnType: "promise"),
+        CAPPluginMethod(name: "recoverActiveWorkout", returnType: "promise"),
     ]
 
     // MARK: - Properties
@@ -26,12 +33,15 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     private var silentPlayer: AVAudioPlayer?          // Houdt AVAudioSession actief (volume 0)
     private var activePlayers = [AVAudioPlayer]()     // Actief spelende cue-players
     private let synth = AVSpeechSynthesizer()         // TTS fallback
-    private var scheduledItems = [DispatchWorkItem]() // Gepland, annuleerbaar
     private var tickTimer: DispatchSourceTimer?       // 500ms tick naar JS
 
-    // Wall-clock elapsed tracking (bevriest niet bij process-achtergrond)
+    // Chain scheduling
+    private var currentCueIndex = 0
+    private var nextCueItem: DispatchWorkItem?
+
+    // Wall-clock elapsed tracking
     private var startDate: Date?
-    private var pausedInterval: TimeInterval = 0  // Totale gepauzeerde seconden
+    private var pausedInterval: TimeInterval = 0
     private var pauseDate: Date?
 
     // Opgeslagen voor herplanning bij resume
@@ -52,14 +62,12 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     // MARK: - Plugin API
 
     @objc func start(_ call: CAPPluginCall) {
-        // Capacitor deserialiseert de array als [Any]; cast elk element defensief naar [String: Any]
         let rawArray = call.getArray("cueTimeline") ?? []
         let timeline = rawArray.compactMap { $0 as? [String: Any] }
-
         let voice = call.getString("voice") ?? "rebecca"
         let fromElapsed = call.getDouble("fromElapsed") ?? 0.0
 
-        print("[WorkoutAudio] start() ontvangen — stem: \(voice), fromElapsed: \(fromElapsed)s, \(timeline.count)/\(rawArray.count) cues")
+        print("[WorkoutAudio] start() ontvangen — stem: \(voice), fromElapsed: \(fromElapsed)s, \(timeline.count) cues")
 
         reset()
         currentVoice = voice
@@ -67,9 +75,12 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         startDate = Date(timeIntervalSinceNow: -fromElapsed)
 
         setupAudioSession()
+        registerInterruptionObserver()
         startSilentLoop()
-        scheduleFromTimeline(fromElapsed: fromElapsed)
+        currentCueIndex = 0
+        scheduleNext()
         startTickTimer()
+        saveState()
 
         call.resolve()
     }
@@ -82,34 +93,61 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
 
     @objc func pause(_ call: CAPPluginCall) {
         guard startDate != nil, pauseDate == nil else {
-            call.resolve()
-            return
+            call.resolve(); return
         }
         pauseDate = Date()
         cancelScheduled()
         stopTickTimer()
-        // silentLoop blijft draaien zodat iOS de app niet suspendeert tijdens pauze
+        saveState()
         print("[WorkoutAudio] Gepauzeerd op \(elapsedSeconds().rounded())s")
         call.resolve()
     }
 
     @objc func resume(_ call: CAPPluginCall) {
         guard let pd = pauseDate else {
-            call.resolve()
-            return
+            call.resolve(); return
         }
         pausedInterval += Date().timeIntervalSince(pd)
         pauseDate = nil
-
-        let elapsed = elapsedSeconds()
-        let remaining = storedTimeline.filter {
-            (($0["triggerAt"] as? NSNumber)?.doubleValue ?? 0) > elapsed + 0.5
-        }
-        scheduleItems(cues: remaining)
+        scheduleNext()
         startTickTimer()
-
-        print("[WorkoutAudio] Hervat op \(elapsed.rounded())s, \(remaining.count) resterende cues")
+        saveState()
+        print("[WorkoutAudio] Hervat op \(elapsedSeconds().rounded())s")
         call.resolve()
+    }
+
+    @objc func getStatus(_ call: CAPPluginCall) {
+        guard startDate != nil else {
+            call.resolve(["state": "idle"]); return
+        }
+        call.resolve([
+            "state":          pauseDate != nil ? "paused" : "running",
+            "elapsedSeconds": elapsedSeconds(),
+            "currentCueIndex": currentCueIndex,
+            "totalCues":      storedTimeline.count,
+            "voice":          currentVoice,
+        ])
+    }
+
+    @objc func recoverActiveWorkout(_ call: CAPPluginCall) {
+        guard let d = UserDefaults.standard.dictionary(forKey: "runCoach.session") else {
+            call.resolve(["hasActiveSession": false]); return
+        }
+        let startTs  = d["startTimestamp"] as? Double ?? 0
+        let paused   = d["pausedInterval"] as? Double ?? 0
+        let isPaused = d["isPaused"]       as? Bool   ?? false
+        let pauseTs  = d["pauseTimestamp"] as? Double ?? Date().timeIntervalSince1970
+        let now      = Date().timeIntervalSince1970
+        let elapsed  = isPaused
+            ? max(0, pauseTs - startTs - paused)
+            : max(0, now - startTs - paused)
+        call.resolve([
+            "hasActiveSession": true,
+            "elapsedSeconds":   elapsed,
+            "isPaused":         isPaused,
+            "voice":            d["voice"] as? String ?? "rebecca",
+            "currentCueIndex":  d["currentCueIndex"] as? Int ?? 0,
+        ])
     }
 
     // MARK: - State management
@@ -118,12 +156,15 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         cancelScheduled()
         stopTickTimer()
         stopSilentLoop()
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
         synth.stopSpeaking(at: .immediate)
         activePlayers.forEach { $0.stop() }
         activePlayers.removeAll()
         startDate = nil
         pausedInterval = 0
         pauseDate = nil
+        currentCueIndex = 0
+        clearSavedState()
     }
 
     // MARK: - AVAudioSession
@@ -135,6 +176,32 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         } catch {
             print("[WorkoutAudio] AVAudioSession fout: \(error)")
         }
+    }
+
+    // MARK: - Interruption handling
+
+    private func registerInterruptionObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let tv = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: tv) else { return }
+        if type == .began, startDate != nil, pauseDate == nil {
+            pauseDate = Date()
+            cancelScheduled()
+            stopTickTimer()
+            notifyListeners("interrupted", data: ["reason": "audioInterruption"])
+            saveState()
+            print("[WorkoutAudio] Onderbroken (telefoon / Siri)")
+        }
+        // .ended: niet automatisch hervatten — gebruiker tikt DOORGAAN
     }
 
     // MARK: - Silent keepalive loop
@@ -170,44 +237,55 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         return d
     }
 
-    // MARK: - Cue scheduling
+    // MARK: - Chain scheduling
 
-    private func scheduleFromTimeline(fromElapsed: Double) {
-        let cutoff = max(0, fromElapsed - 2)
-        let cues = storedTimeline.filter { (($0["triggerAt"] as? NSNumber)?.doubleValue ?? 0) >= cutoff }
-        scheduleItems(cues: cues)
-    }
+    private func scheduleNext() {
+        nextCueItem?.cancel()
+        nextCueItem = nil
 
-    private func scheduleItems(cues: [[String: Any]]) {
+        // Sla cues over die al verstreken zijn
         let elapsed = elapsedSeconds()
+        while currentCueIndex < storedTimeline.count {
+            let t = (storedTimeline[currentCueIndex]["triggerAt"] as? NSNumber)?.doubleValue ?? 0
+            if t >= elapsed - 0.5 { break }
+            currentCueIndex += 1
+        }
+
+        guard currentCueIndex < storedTimeline.count else {
+            // Alle cues gespeeld — training voltooid
+            notifyListeners("completed", data: ["elapsedSeconds": elapsed])
+            stopTickTimer()
+            clearSavedState()
+            print("[WorkoutAudio] Training voltooid na \(elapsed.rounded())s")
+            return
+        }
+
+        let cue = storedTimeline[currentCueIndex]
+        let triggerAt = (cue["triggerAt"] as? NSNumber)?.doubleValue ?? 0
+        let delay = max(0.05, triggerAt - elapsed)
+        let idx = currentCueIndex
         let voiceSnap = currentVoice
 
-        for cue in cues {
-            // triggerAt kan Int of Double zijn afhankelijk van JSON serialisatie
-            let triggerAt = (cue["triggerAt"] as? NSNumber)?.doubleValue ?? 0
-            let delay = max(0.05, triggerAt - elapsed)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.pauseDate == nil else { return }
             let type = cue["type"] as? String ?? ""
-            let message = cue["message"] as? String
-
-            let item = DispatchWorkItem { [weak self] in
-                guard let self = self, self.pauseDate == nil else { return }
-                switch type {
-                case "beep":
-                    self.playBeep()
-                case "speech":
-                    if let msg = message { self.playSpeech(msg, voice: voiceSnap) }
-                default:
-                    break
-                }
+            if type == "beep" {
+                self.playBeep()
+            } else if type == "speech", let msg = cue["message"] as? String {
+                self.playSpeech(msg, voice: voiceSnap)
             }
-            scheduledItems.append(item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            self.notifyListeners("cuePlayed", data: ["cueIndex": idx])
+            self.currentCueIndex = idx + 1
+            self.saveState()
+            self.scheduleNext()
         }
+        nextCueItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     private func cancelScheduled() {
-        scheduledItems.forEach { $0.cancel() }
-        scheduledItems.removeAll()
+        nextCueItem?.cancel()
+        nextCueItem = nil
     }
 
     // MARK: - Tick timer
@@ -217,7 +295,7 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now(), repeating: .milliseconds(500))
         timer.setEventHandler { [weak self] in
-            guard let self = self, self.startDate != nil else { return }
+            guard let self, self.startDate != nil else { return }
             self.notifyListeners("tick", data: ["elapsedSeconds": self.elapsedSeconds()])
         }
         timer.resume()
@@ -243,7 +321,6 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     private func playSpeech(_ message: String, voice: String) {
         let slug = slugify(message)
         let subdir = "public/audio/cues/\(voice)"
-
         if let url = Bundle.main.url(forResource: slug, withExtension: "mp3", subdirectory: subdir),
            let player = try? AVAudioPlayer(contentsOf: url) {
             player.delegate = self
@@ -263,6 +340,26 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         activePlayers.removeAll { $0 === player }
+    }
+
+    // MARK: - UserDefaults persistentie
+
+    private func saveState() {
+        guard let start = startDate else { return }
+        let d: [String: Any] = [
+            "startTimestamp":  start.timeIntervalSince1970,
+            "pausedInterval":  pausedInterval,
+            "isPaused":        pauseDate != nil,
+            "pauseTimestamp":  pauseDate?.timeIntervalSince1970 as Any,
+            "voice":           currentVoice,
+            "timeline":        storedTimeline,
+            "currentCueIndex": currentCueIndex,
+        ]
+        UserDefaults.standard.set(d, forKey: "runCoach.session")
+    }
+
+    private func clearSavedState() {
+        UserDefaults.standard.removeObject(forKey: "runCoach.session")
     }
 
     // MARK: - Helpers
@@ -285,8 +382,7 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
             if ch == " " {
                 if !prevSpace { slug.append("-"); prevSpace = true }
             } else {
-                slug.append(ch)
-                prevSpace = false
+                slug.append(ch); prevSpace = false
             }
         }
         return String(slug.prefix(60))
@@ -299,7 +395,6 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         let attack = max(1, Int(Double(sr) * 0.01))
         let release = max(1, Int(Double(sr) * 0.05))
         var samples = [Int16](repeating: 0, count: count)
-
         for i in 0..<count {
             let t = Double(i) / Double(sr)
             let env: Double
@@ -312,20 +407,17 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
             }
             samples[i] = Int16(sin(2 * .pi * frequency * t) * 0.5 * env * 32767)
         }
-
         var d = Data()
         let dataSize = UInt32(count * 2)
         let sampleRate = UInt32(sr)
         func u32(_ v: UInt32) { var le = v.littleEndian; withUnsafeBytes(of: &le) { d.append(contentsOf: $0) } }
         func u16(_ v: UInt16) { var le = v.littleEndian; withUnsafeBytes(of: &le) { d.append(contentsOf: $0) } }
-
         d.append(contentsOf: "RIFF".utf8); u32(36 + dataSize)
         d.append(contentsOf: "WAVE".utf8)
         d.append(contentsOf: "fmt ".utf8); u32(16); u16(1); u16(1)
         u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
         d.append(contentsOf: "data".utf8); u32(dataSize)
         samples.withUnsafeBytes { d.append(contentsOf: $0) }
-
         return d
     }
 }

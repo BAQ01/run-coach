@@ -1,6 +1,6 @@
 {
   "name": "run-coach",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Running Coach PWA - Audio-guided interval training",
   "scripts": {
     "dev": "vite",

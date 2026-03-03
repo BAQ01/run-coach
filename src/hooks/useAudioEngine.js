@@ -4,7 +4,7 @@
  * Native path (Capacitor iOS):
  *   Delegates volledig naar WorkoutAudioPlugin.swift.
  *   Audio session, scheduling, background en playback zijn 100% native.
- *   JS stuurt alleen de cue timeline op via de plugin API en luistert naar tick events.
+ *   JS stuurt alleen de cue timeline op via de plugin API en luistert naar events.
  *
  * Web path (PWA/browser):
  *   Web Audio API met pre-scheduling en wall-clock timer.
@@ -24,7 +24,7 @@ export function useAudioEngine() {
   const tickCallbackRef = useRef(null)
 
   // ── Native-only refs ─────────────────────────────────────────────────────
-  const nativeListenerRef = useRef(null)
+  const nativeListenersRef = useRef([])  // Alle actieve Capacitor event listeners
 
   // ── Web-only refs ─────────────────────────────────────────────────────────
   const ctxRef = useRef(null)
@@ -149,17 +149,26 @@ export function useAudioEngine() {
 
   // ── start ─────────────────────────────────────────────────────────────────
 
-  const start = useCallback(async (onTick, cueTimeline, voice, fromElapsedSeconds = 0) => {
+  const start = useCallback(async (onTick, cueTimeline, voice, fromElapsedSeconds = 0, onInterrupted = null) => {
     tickCallbackRef.current = onTick
 
     if (IS_NATIVE) {
-      if (nativeListenerRef.current) {
-        nativeListenerRef.current.remove()
-        nativeListenerRef.current = null
-      }
-      nativeListenerRef.current = await WorkoutAudio.addListener('tick', ({ elapsedSeconds }) => {
+      // Verwijder eventuele vorige listeners
+      nativeListenersRef.current.forEach(l => l.remove())
+      nativeListenersRef.current = []
+
+      const tickL = await WorkoutAudio.addListener('tick', ({ elapsedSeconds }) => {
         if (tickCallbackRef.current) tickCallbackRef.current(elapsedSeconds)
       })
+      const completedL = await WorkoutAudio.addListener('completed', ({ elapsedSeconds }) => {
+        // Stuur een groot elapsed getal zodat resolveWorkoutState DONE retourneert
+        if (tickCallbackRef.current) tickCallbackRef.current(elapsedSeconds ?? 999999)
+      })
+      const interruptedL = await WorkoutAudio.addListener('interrupted', () => {
+        if (onInterrupted) onInterrupted()
+      })
+      nativeListenersRef.current = [tickL, completedL, interruptedL]
+
       await WorkoutAudio.start({
         cueTimeline: (cueTimeline ?? []).map(c => ({
           triggerAt: c.triggerAt,
@@ -225,8 +234,8 @@ export function useAudioEngine() {
 
     if (IS_NATIVE) {
       WorkoutAudio.stop()
-      nativeListenerRef.current?.remove()
-      nativeListenerRef.current = null
+      nativeListenersRef.current.forEach(l => l.remove())
+      nativeListenersRef.current = []
       return
     }
 
@@ -273,6 +282,18 @@ export function useAudioEngine() {
     }, 500)
   }, [getElapsedSeconds, rescheduleFutureCues])
 
+  // ── Native bridge: query methods ──────────────────────────────────────────
+
+  const getStatus = useCallback(async () => {
+    if (!IS_NATIVE) return { state: 'idle' }
+    return WorkoutAudio.getStatus()
+  }, [])
+
+  const recoverActiveWorkout = useCallback(async () => {
+    if (!IS_NATIVE) return { hasActiveSession: false }
+    return WorkoutAudio.recoverActiveWorkout()
+  }, [])
+
   // ── Cleanup bij unmount ───────────────────────────────────────────────────
 
   useEffect(() => {
@@ -285,5 +306,5 @@ export function useAudioEngine() {
     }
   }, [stop])
 
-  return { start, stop, pause, resume }
+  return { start, stop, pause, resume, getStatus, recoverActiveWorkout }
 }

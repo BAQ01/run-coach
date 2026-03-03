@@ -70,7 +70,7 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     setStartError(null)
     try {
       const cueTimeline = buildCueTimeline(intervals)
-      await audio.start(handleTick, cueTimeline, voice, initialElapsed)
+      await audio.start(handleTick, cueTimeline, voice, initialElapsed, () => setPaused(true))
       setRunState(WorkoutState.WARMUP)
     } catch (err) {
       console.error('[ActiveRun] Start mislukt:', err)
