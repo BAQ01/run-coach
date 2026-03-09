@@ -31,10 +31,14 @@ export default defineConfig(({ mode }) => {
           ],
         },
         workbox: {
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MiB (audio cue data in bundle)
           globPatterns: ['**/*.{js,css,html,ico,png,svg,mp3,wav}'],
           runtimeCaching: [
             {
-              urlPattern: /^https:\/\/.*\.supabase\.co\/.*/i,
+              // Cache alleen REST/DB queries en Edge Function responses.
+              // Auth-endpoints (/auth/v1/) worden NIET gecached: die bevatten
+              // JWT access- en refresh-tokens in de response body.
+              urlPattern: /^https:\/\/.*\.supabase\.co\/(?!auth\/).*$/i,
               handler: 'NetworkFirst',
               options: { cacheName: 'supabase-cache', networkTimeoutSeconds: 10 },
             },

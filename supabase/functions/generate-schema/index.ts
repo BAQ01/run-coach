@@ -13,15 +13,26 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+// Toegestane origins — voeg je productie-domein toe als je de PWA publiek deployt.
+const ALLOWED_ORIGINS = new Set([
+  'capacitor://localhost',   // iOS Capacitor app
+  'http://localhost:5173',   // Vite dev server
+  'http://localhost:4173',   // Vite preview
+])
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get('Origin') ?? ''
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGINS.has(origin) ? origin : 'capacitor://localhost',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Vary': 'Origin',
+  }
 }
 
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { headers: corsHeaders(req) })
   }
 
   try {
@@ -30,7 +41,7 @@ Deno.serve(async (req) => {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return new Response(JSON.stringify({ error: 'Niet geautoriseerd' }), {
       status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -45,7 +56,7 @@ Deno.serve(async (req) => {
     console.error('Auth error:', authError?.message)
     return new Response(JSON.stringify({ error: 'Ongeldige sessie', detail: authError?.message }), {
       status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -56,7 +67,7 @@ Deno.serve(async (req) => {
   } catch {
     return new Response(JSON.stringify({ error: 'Ongeldig JSON body' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -65,7 +76,7 @@ Deno.serve(async (req) => {
   if (daysPerWeek < 2 || daysPerWeek > 4) {
     return new Response(JSON.stringify({ error: 'daysPerWeek moet tussen 2 en 4 zijn' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -95,20 +106,20 @@ Deno.serve(async (req) => {
     console.error('DB error:', dbError)
     return new Response(JSON.stringify({ error: 'Schema opslaan mislukt', detail: dbError.message }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
   return new Response(JSON.stringify({ plan: savedSchema, schema }), {
     status: 200,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
   })
 
   } catch (err) {
     console.error('Onverwachte fout:', err)
     return new Response(JSON.stringify({ error: 'Interne fout', detail: String(err) }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 })

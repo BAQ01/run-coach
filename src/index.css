@@ -10,14 +10,16 @@
   touch-action: manipulation;
 }
 
+html {
+  overflow: hidden;
+}
+
 body {
   background-color: #000;
   color: #fff;
   font-family: system-ui, -apple-system, sans-serif;
-  overflow-x: hidden;
-  /* Safe area insets for notched phones */
-  padding-top: env(safe-area-inset-top);
-  padding-bottom: env(safe-area-inset-bottom);
+  overflow: hidden;
+  /* Safe areas worden per-scherm afgehandeld via env(safe-area-inset-*) */
 }
 
 /* Prevent double-tap zoom on buttons */

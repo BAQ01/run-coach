@@ -15,7 +15,7 @@ import { useRef, useCallback, useEffect } from 'react'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import audioCueData from '../lib/audioCueData.js'
 
-const WorkoutAudio = registerPlugin('WorkoutAudio')
+export const WorkoutAudio = registerPlugin('WorkoutAudio')
 const IS_NATIVE = Capacitor.isNativePlatform()
 
 
@@ -279,6 +279,67 @@ export function useAudioEngine() {
     }, 500)
   }, [getElapsedSeconds, rescheduleFutureCues])
 
+  // ── Native: attach to already-running session (no restart) ───────────────
+
+  const attach = useCallback(async (onTick) => {
+    if (!IS_NATIVE) return
+    tickCallbackRef.current = onTick
+    nativeListenersRef.current.forEach(l => l.remove())
+    nativeListenersRef.current = []
+    const tickL = await WorkoutAudio.addListener('tick', ({ elapsedSeconds }) => {
+      if (tickCallbackRef.current) tickCallbackRef.current(elapsedSeconds)
+    })
+    const completedL = await WorkoutAudio.addListener('completed', ({ elapsedSeconds }) => {
+      if (tickCallbackRef.current) tickCallbackRef.current(elapsedSeconds ?? 999999)
+    })
+    nativeListenersRef.current = [tickL, completedL]
+  }, [])
+
+  // ── playCoachCue — Phase B: immediate cue outside scheduled timeline ─────
+
+  // Maps slug to Dutch TTS fallback text for the web path
+  const CUE_TTS_FALLBACK = {
+    'coach_hr_too_high':      'Hartslag te hoog, vertraag je tempo',
+    'coach_increase_cadence': 'Verhoog je cadans',
+  }
+
+  const playCoachCue = useCallback(async (slug) => {
+    if (IS_NATIVE) {
+      await WorkoutAudio.playCoachCue({ slug, voice: storedVoiceRef.current ?? 'rebecca' })
+        .catch(err => console.warn('[AudioEngine] playCoachCue mislukt:', err))
+      return
+    }
+
+    // Web path: try audioCueData first, then TTS
+    const ctx = ctxRef.current
+    const voice = storedVoiceRef.current ?? 'rebecca'
+    if (!ctx) return
+
+    const dataUri = audioCueData[voice]?.[slug]
+    if (dataUri) {
+      try {
+        const res = await fetch(dataUri)
+        const buffer = await ctx.decodeAudioData(await res.arrayBuffer())
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(ctx.destination)
+        source.start()
+        return
+      } catch (err) {
+        console.warn('[AudioEngine] Coach cue decode mislukt:', slug, err.message)
+      }
+    }
+
+    // TTS fallback
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel()
+      const text = CUE_TTS_FALLBACK[slug] ?? slug.replace(/_/g, ' ')
+      const utt = new SpeechSynthesisUtterance(text)
+      utt.lang = 'nl-NL'; utt.rate = 0.95
+      window.speechSynthesis.speak(utt)
+    }
+  }, []) // storedVoiceRef and ctxRef are stable refs; no deps needed
+
   // ── Native bridge: query methods ──────────────────────────────────────────
 
   const getStatus = useCallback(async () => {
@@ -295,13 +356,18 @@ export function useAudioEngine() {
 
   useEffect(() => {
     return () => {
-      stop()
-      if (!IS_NATIVE) {
+      tickCallbackRef.current = null
+      if (IS_NATIVE) {
+        // Remove JS listeners only — do NOT stop the native workout
+        nativeListenersRef.current.forEach(l => l.remove())
+        nativeListenersRef.current = []
+      } else {
+        stop()
         const ctx = ctxRef.current
         if (ctx && ctx.state !== 'closed') ctx.close()
       }
     }
   }, [stop])
 
-  return { start, stop, pause, resume, getStatus, recoverActiveWorkout }
+  return { start, stop, pause, resume, attach, getStatus, recoverActiveWorkout, playCoachCue }
 }

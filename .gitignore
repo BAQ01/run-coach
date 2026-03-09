@@ -7,3 +7,9 @@ dist
 test_e2e.sh
 supabase/.temp
 Run Coach/
+
+# Claude Code settings – bevat lokale tokens en allowed-commands history
+.claude/
+
+# Vite dependency cache
+.vite/

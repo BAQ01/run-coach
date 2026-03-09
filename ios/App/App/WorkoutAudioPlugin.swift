@@ -13,7 +13,7 @@ import Capacitor
 ///   - UserDefaults persistentie → recoverActiveWorkout() na WebView-herstart of crash
 ///   - Tick events (500ms) + cuePlayed / completed / interrupted events naar JS
 @objc(WorkoutAudioPlugin)
-public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDelegate {
+public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
 
     // MARK: - CAPBridgedPlugin
 
@@ -26,12 +26,14 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         CAPPluginMethod(name: "resume",               returnType: "promise"),
         CAPPluginMethod(name: "getStatus",            returnType: "promise"),
         CAPPluginMethod(name: "recoverActiveWorkout", returnType: "promise"),
+        CAPPluginMethod(name: "playCoachCue",         returnType: "promise"),
     ]
 
     // MARK: - Properties
 
     private var silentPlayer: AVAudioPlayer?          // Houdt AVAudioSession actief (volume 0)
     private var activePlayers = [AVAudioPlayer]()     // Actief spelende cue-players
+    private var speechPlayers = [AVAudioPlayer]()     // Subset van activePlayers: alleen spraakcues
     private let synth = AVSpeechSynthesizer()         // TTS fallback
     private var tickTimer: DispatchSourceTimer?       // 500ms tick naar JS
 
@@ -75,6 +77,7 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         startDate = Date(timeIntervalSinceNow: -fromElapsed)
 
         setupAudioSession()
+        synth.delegate = self
         registerInterruptionObserver()
         startSilentLoop()
         currentCueIndex = 0
@@ -153,6 +156,49 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         ])
     }
 
+    // MARK: - Immediate coach cue (Phase B: Zone 2 / Cadence interventions)
+
+    /// Speelt een coach-cue direct af zonder de bestaande cue-timeline te verstoren.
+    /// Gebruikt ducking (zet muziek zachter) tijdens het afspelen, precies als reguliere cues.
+    /// Heeft GEEN effect op elapsed time, scheduling of workout state.
+    @objc func playCoachCue(_ call: CAPPluginCall) {
+        let slug  = call.getString("slug")  ?? ""
+        let voice = call.getString("voice") ?? currentVoice
+        guard !slug.isEmpty else { call.reject("slug ontbreekt"); return }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let subdir = "public/audio/cues/\(voice)"
+            self.enableDucking()
+            if let url    = Bundle.main.url(forResource: slug, withExtension: "mp3", subdirectory: subdir),
+               let player = try? AVAudioPlayer(contentsOf: url) {
+                player.delegate = self
+                player.prepareToPlay()
+                player.play()
+                self.activePlayers.append(player)
+                self.speechPlayers.append(player)
+                print("[WorkoutAudio] Coach cue gespeeld: \(slug)")
+            } else {
+                // TTS fallback: slug → leesbare Nederlandse tekst
+                let ttsText: String
+                switch slug {
+                case "coach_hr_too_high":       ttsText = "Hartslag te hoog, vertraag je tempo"
+                case "coach_increase_cadence":  ttsText = "Verhoog je cadans"
+                default:
+                    ttsText = slug
+                        .replacingOccurrences(of: "coach_", with: "")
+                        .replacingOccurrences(of: "_", with: " ")
+                }
+                let utt = AVSpeechUtterance(string: ttsText)
+                utt.voice = AVSpeechSynthesisVoice(language: "nl-NL")
+                utt.rate = 0.48
+                self.synth.speak(utt)
+                print("[WorkoutAudio] Coach cue TTS fallback: \(ttsText)")
+            }
+        }
+        call.resolve()
+    }
+
     // MARK: - State management
 
     private func reset() {
@@ -163,6 +209,7 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         synth.stopSpeaking(at: .immediate)
         activePlayers.forEach { $0.stop() }
         activePlayers.removeAll()
+        speechPlayers.removeAll()
         startDate = nil
         pausedInterval = 0
         pauseDate = nil
@@ -178,6 +225,30 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("[WorkoutAudio] AVAudioSession fout: \(error)")
+        }
+    }
+
+    // MARK: - Audio ducking (alleen tijdelijk tijdens gesproken cues)
+
+    /// Schakelt ducking in: andere audio-apps worden zachter gezet.
+    /// Alleen aanroepen vlak vóór een gesproken coach-cue.
+    private func enableDucking() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .duckOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("[WorkoutAudio] Ducking inschakelen mislukt: \(error)")
+        }
+    }
+
+    /// Zet ducking terug uit: andere audio-apps keren terug naar normaal volume.
+    /// Aanroepen zodra de gesproken cue klaar is.
+    private func disableDucking() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("[WorkoutAudio] Ducking uitschakelen mislukt: \(error)")
         }
     }
 
@@ -322,18 +393,20 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     private func playSpeech(_ message: String, voice: String) {
         let slug = slugify(message)
         let subdir = "public/audio/cues/\(voice)"
+        enableDucking()   // duck andere audio vóór de gesproken cue
         if let url = Bundle.main.url(forResource: slug, withExtension: "mp3", subdirectory: subdir),
            let player = try? AVAudioPlayer(contentsOf: url) {
             player.delegate = self
             player.prepareToPlay()
             player.play()
             activePlayers.append(player)
+            speechPlayers.append(player)   // bewaar voor ducking-herstel via delegate
         } else {
             print("[WorkoutAudio] MP3 niet gevonden: \(subdir)/\(slug).mp3 — fallback naar TTS")
             let utt = AVSpeechUtterance(string: message)
             utt.voice = AVSpeechSynthesisVoice(language: "nl-NL")
             utt.rate = 0.48
-            synth.speak(utt)
+            synth.speak(utt)   // ducking-herstel via speechSynthesizer(_:didFinish:)
         }
     }
 
@@ -341,6 +414,18 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         activePlayers.removeAll { $0 === player }
+        let wasSpeech = speechPlayers.contains { $0 === player }
+        speechPlayers.removeAll { $0 === player }
+        // Herstel ducking zodra de laatste spraakplayer klaar is
+        if wasSpeech && speechPlayers.isEmpty {
+            disableDucking()
+        }
+    }
+
+    // MARK: - AVSpeechSynthesizerDelegate
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        disableDucking()
     }
 
     // MARK: - UserDefaults persistentie

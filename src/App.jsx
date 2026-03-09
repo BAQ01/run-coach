@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { useAuth } from './hooks/useAuth'
 import { supabase } from './lib/supabase'
 import AuthScreen from './screens/AuthScreen'
@@ -6,12 +7,17 @@ import OnboardingScreen from './screens/OnboardingScreen'
 import DashboardScreen from './screens/DashboardScreen'
 import ActiveRunScreen from './screens/ActiveRunScreen'
 import PostRunScreen from './screens/PostRunScreen'
+import RunHistoryScreen from './screens/RunHistoryScreen'
+import RunDetailScreen from './screens/RunDetailScreen'
+import { WorkoutAudio } from './hooks/useAudioEngine'
 
 const AppView = {
-  ONBOARDING: 'ONBOARDING',
-  DASHBOARD: 'DASHBOARD',
-  ACTIVE_RUN: 'ACTIVE_RUN',
-  POST_RUN: 'POST_RUN',
+  ONBOARDING:  'ONBOARDING',
+  DASHBOARD:   'DASHBOARD',
+  ACTIVE_RUN:  'ACTIVE_RUN',
+  POST_RUN:    'POST_RUN',
+  RUN_HISTORY: 'RUN_HISTORY',
+  RUN_DETAIL:  'RUN_DETAIL',
 }
 
 const STORAGE_KEY = 'activeWorkout'
@@ -49,10 +55,26 @@ export default function App() {
   const [planLoading, setPlanLoading] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [resumeWorkout, setResumeWorkout] = useState(null)
+  const [autoAttach, setAutoAttach] = useState(false)
+  const [selectedLog, setSelectedLog] = useState(null)
 
   const loadAllPlans = useCallback(async () => {
     if (!user) return
     setPlanLoading(true)
+
+    // Controleer native status EERST, terwijl spinner nog zichtbaar is.
+    // Native > localStorage: als native loopt, nooit de banner tonen.
+    let nativeElapsed = null
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const status = await WorkoutAudio.getStatus()
+        console.log('[App] WorkoutAudio.getStatus():', JSON.stringify(status))
+        if (status.state === 'running') nativeElapsed = status.elapsedSeconds
+      } catch (e) {
+        console.warn('[App] getStatus() mislukt:', e?.message ?? e)
+      }
+    }
+
     const { data, error } = await supabase
       .from('training_plans')
       .select('*')
@@ -66,8 +88,22 @@ export default function App() {
       return
     }
     setPlans(data ?? [])
+
+    // Als native loopt: direct koppelen, geen banner, geen IDLE scherm
+    if (nativeElapsed !== null) {
+      const saved = loadSavedWorkout()
+      if (saved) {
+        setActivePlan({ id: saved.planId })
+        setActiveSession(saved.session)
+        setActiveInitialElapsed(Math.floor(nativeElapsed))
+        setAutoAttach(true)
+        setView(AppView.ACTIVE_RUN)
+        return
+      }
+    }
+
+    // Normale flow: dashboard + optioneel hervattingsbanner
     setView(data && data.length > 0 ? AppView.DASHBOARD : AppView.ONBOARDING)
-    // Check voor onderbroken training na laden van plans
     const saved = loadSavedWorkout()
     if (saved) setResumeWorkout(saved)
   }, [user])
@@ -100,6 +136,7 @@ export default function App() {
   const handleRunDone = (elapsed) => {
     setRunElapsed(elapsed ?? 0)
     setActiveInitialElapsed(0)
+    setAutoAttach(false)
     if (elapsed && elapsed > 60) {
       setView(AppView.POST_RUN)
     } else {
@@ -117,6 +154,28 @@ export default function App() {
 
   const handleNewPlan = () => {
     setView(AppView.ONBOARDING)
+  }
+
+  const handlePlanDeleted = (planId) => {
+    setPlans(prev => prev.filter(p => p.id !== planId))
+  }
+
+  const handleOpenHistory = () => {
+    setView(AppView.RUN_HISTORY)
+  }
+
+  const handleSelectLog = (log) => {
+    setSelectedLog(log)
+    setView(AppView.RUN_DETAIL)
+  }
+
+  const handleBackFromDetail = () => {
+    setView(AppView.RUN_HISTORY)
+  }
+
+  const handleBackFromHistory = () => {
+    setSelectedLog(null)
+    setView(AppView.DASHBOARD)
   }
 
   if (loading || planLoading) {
@@ -146,6 +205,22 @@ export default function App() {
       refreshKey={refreshKey}
       resumeWorkout={resumeWorkout}
       onResumeWorkout={handleResumeWorkout}
+      onPlanDeleted={handlePlanDeleted}
+      onOpenHistory={handleOpenHistory}
+    />
+  )
+  if (view === AppView.RUN_HISTORY) return (
+    <RunHistoryScreen
+      plans={plans}
+      onBack={handleBackFromHistory}
+      onSelectLog={handleSelectLog}
+    />
+  )
+  if (view === AppView.RUN_DETAIL && selectedLog) return (
+    <RunDetailScreen
+      logId={selectedLog.id}
+      plans={plans}
+      onBack={handleBackFromDetail}
     />
   )
   if (view === AppView.ACTIVE_RUN && activeSession) return (
@@ -154,6 +229,7 @@ export default function App() {
       planId={activePlan?.id}
       initialElapsed={activeInitialElapsed}
       onDone={handleRunDone}
+      autoAttach={autoAttach}
     />
   )
   if (view === AppView.POST_RUN && activeSession && activePlan) return (

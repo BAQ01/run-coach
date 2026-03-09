@@ -1,6 +1,6 @@
 {
   "name": "run-coach",
-  "version": "0.5.6",
+  "version": "0.5.9",
   "description": "Running Coach PWA - Audio-guided interval training",
   "scripts": {
     "dev": "vite",
@@ -8,7 +8,9 @@
     "preview": "vite preview",
     "cap:build": "node scripts/build-audio-data.mjs && VITE_CAPACITOR=1 vite build && npx cap sync ios",
     "cap:open": "npx cap open ios",
-    "version": "node scripts/version.mjs"
+    "version": "node scripts/version.mjs",
+    "backup:safe:full": "node scripts/backup-safe-full.mjs",
+    "backup:safe": "zip -r \"../run-coach_backup_$(date +%Y-%m-%d).zip\" . --exclude '*/node_modules/*' --exclude '*/.git/*' --exclude '*/ios/App/Pods/*' --exclude '*/dist/*' --exclude '*/.env*' --exclude '*/.env.local' --exclude '*/run-coach_backup*' --exclude '*/.claude/*' && echo \"Backup klaar (geen secrets ingesloten)\""
   },
   "repository": {
     "type": "git",

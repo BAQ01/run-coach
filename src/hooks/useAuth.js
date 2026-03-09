@@ -27,7 +27,11 @@ export function useAuth() {
   const signUp = (email, password) =>
     supabase.auth.signUp({ email, password })
 
-  const signOut = () => supabase.auth.signOut()
+  const signOut = async () => {
+    // Verwijder lokale workout-state zodat die niet lekt naar een volgende sessie
+    localStorage.removeItem('activeWorkout')
+    return supabase.auth.signOut()
+  }
 
   return { session, user, loading, signIn, signUp, signOut }
 }
