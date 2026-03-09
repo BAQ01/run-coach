@@ -31,7 +31,7 @@ export default defineConfig(({ mode }) => {
           ],
         },
         workbox: {
-          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MiB (audio cue data in bundle)
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024, // 6 MiB (audio cue data in bundle)
           globPatterns: ['**/*.{js,css,html,ico,png,svg,mp3,wav}'],
           runtimeCaching: [
             {

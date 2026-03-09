@@ -3,6 +3,7 @@ import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useHealthKitWorkout } from '../hooks/useHealthKitWorkout'
 import { useBiometricObserver } from '../hooks/useBiometricObserver'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
+import IntervalDial from '../components/IntervalDial'
 
 const VOICES = [
   { id: 'rebecca', label: 'Rebecca', gender: 'V' },
@@ -58,6 +59,7 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
 
   const biometricsListenerRef = useRef(null)
   const staleListenerRef = useRef(null)
+  const hasReceivedBiometricsRef = useRef(false)
 
   const handleVoiceChange = useCallback((v) => {
     setVoice(v)
@@ -95,19 +97,26 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     setStartError(null)
     try {
       const cueTimeline = buildCueTimeline(intervals)
-      // HealthKit: vraag toestemming, koppel biometrics-listeners, start workout sessie
-      await healthkit.requestPermissions()
-      setBiometricsStale(false)
-      observerReset()
-      biometricsListenerRef.current = await healthkit.attachBiometrics(sample => {
-        setBiometricsStale(false)
-        observerOnSample(sample, runStateRef.current)
-      })
-      staleListenerRef.current = await healthkit.attachStale(() => setBiometricsStale(true))
-      healthkit.startWorkout()
-      // Audio engine starten
+
+      // Audio direct starten — timer begint onmiddellijk, geen wachttijd voor HealthKit
       await audio.start(handleTick, cueTimeline, voice, initialElapsed)
       setRunState(WorkoutState.WARMUP)
+
+      // HealthKit in de achtergrond koppelen — data komt pas als de gebruiker beweegt
+      setBiometricsStale(false)
+      hasReceivedBiometricsRef.current = false
+      observerReset()
+      healthkit.requestPermissions()
+        .then(async () => {
+          biometricsListenerRef.current = await healthkit.attachBiometrics(sample => {
+            hasReceivedBiometricsRef.current = true
+            setBiometricsStale(false)
+            observerOnSample(sample, runStateRef.current)
+          })
+          staleListenerRef.current = await healthkit.attachStale(() => setBiometricsStale(true))
+          healthkit.startWorkout()
+        })
+        .catch(err => console.warn('[ActiveRun] HealthKit setup mislukt:', err))
     } catch (err) {
       console.error('[ActiveRun] Start mislukt:', err)
       setStartError(err?.message ?? String(err))
@@ -119,8 +128,10 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     if (!autoAttach) return
     audio.attach(handleTick).catch(err => console.error('[ActiveRun] Attach mislukt:', err))
     // Also attach HealthKit biometrics so observer runs during auto-attach sessions
+    hasReceivedBiometricsRef.current = false
     observerReset()
     healthkit.attachBiometrics(sample => {
+      hasReceivedBiometricsRef.current = true
       setBiometricsStale(false)
       observerOnSample(sample, runStateRef.current)
     }).then(h => { biometricsListenerRef.current = h })
@@ -171,6 +182,18 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     return `${m}:${ss.toString().padStart(2, '0')}`
   }
 
+  // ── Actieve dial props ────────────────────────────────────────────────────
+  const intervalTotalSeconds = currentInterval?.durationSeconds ?? 1
+  const activeProgress = currentInterval
+    ? Math.max(0, Math.min(1, 1 - intervalRemaining / intervalTotalSeconds))
+    : 0
+  const intervalIndex = currentInterval ? intervals.indexOf(currentInterval) : 0
+  const _remSec = Math.floor(intervalRemaining)
+  const activeCenterDigits =
+    String(Math.floor(_remSec / 60)).padStart(2, '0') +
+    String(_remSec % 60).padStart(2, '0')
+  const activeSubtitle = `${intervalIndex + 1} / ${intervals.length}`
+
   return (
     <div className="h-screen bg-black text-white flex flex-col select-none overflow-hidden">
 
@@ -187,171 +210,104 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
 
       {/* ── IDLE state: Start scherm ─────────────────────────────────────── */}
       {runState === WorkoutState.IDLE && (
-        <>
-          {/* Scrollbare content */}
-          <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-5">
 
-            <div className="text-center mb-4">
-              <h2 className="text-2xl font-black mb-1">{session.description}</h2>
-              <p className="text-gray-500 text-sm">{session.totalMinutes} minuten • {intervals.length} intervallen</p>
-            </div>
-
-            {/* Interval preview – compact */}
-            <div className="space-y-2 mb-4">
-              {intervals.slice(0, 5).map((iv, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <div
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: STATE_CONFIG[intervalTypeToState(iv.type)]?.color }}
-                  />
-                  <span className="text-gray-400 text-sm capitalize">{iv.type}</span>
-                  <span className="ml-auto text-gray-600 text-sm">
-                    {iv.durationSeconds >= 60 ? `${Math.round(iv.durationSeconds / 60)}min` : `${iv.durationSeconds}sec`}
-                  </span>
-                </div>
-              ))}
-              {intervals.length > 5 && (
-                <p className="text-gray-700 text-xs text-center">+ {intervals.length - 5} meer intervallen</p>
-              )}
-            </div>
-
-            {/* Stemkeuze */}
-            <div className="mb-4">
-              <p className="text-gray-500 text-xs text-center mb-2 uppercase tracking-wider">Coach stem</p>
-              <div className="grid grid-cols-4 gap-2">
-                {VOICES.map(v => (
-                  <button
-                    key={v.id}
-                    onClick={() => handleVoiceChange(v.id)}
-                    className={`py-2 rounded-xl text-xs font-bold transition-all active:scale-95 ${
-                      voice === v.id
-                        ? 'bg-[#39FF14] text-black'
-                        : 'bg-gray-900 text-gray-400 border border-gray-800'
-                    }`}
-                  >
-                    <div>{v.label}</div>
-                    <div className="text-[10px] opacity-60">{v.gender}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {initialElapsed > 0 && (
-              <div className="bg-[#39FF14]/10 border border-[#39FF14]/30 rounded-xl px-4 py-3 text-center mb-3">
-                <p className="text-[#39FF14] text-sm font-bold">Training hervat</p>
-                <p className="text-gray-400 text-xs mt-0.5">Was al {formatTime(initialElapsed)} ver</p>
-              </div>
-            )}
-
-            {startError && (
-              <div className="bg-red-950 border border-red-800 rounded-xl px-4 py-3 text-center">
-                <p className="text-red-400 text-xs font-mono break-all">{startError}</p>
-              </div>
-            )}
+          {/* Session info */}
+          <div className="text-center space-y-1">
+            <p className="text-gray-500 text-sm tracking-wide">{session.description}</p>
+            <p className="text-white text-3xl font-black tabular-nums">{formatTime(totalDuration)}</p>
           </div>
 
-          {/* Vaste onderste knoppen */}
-          <div
-            className="shrink-0 px-5 pt-3"
-            style={{ paddingBottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}
+          {/* Hervattingsbanner */}
+          {initialElapsed > 0 && (
+            <div className="w-full bg-[#39FF14]/10 border border-[#39FF14]/30 rounded-xl px-4 py-2 text-center">
+              <p className="text-[#39FF14] text-sm font-bold">Training hervat</p>
+              <p className="text-gray-400 text-xs mt-0.5">Was al {formatTime(initialElapsed)} ver</p>
+            </div>
+          )}
+
+          {/* Start knop */}
+          <button
+            onClick={handleStart}
+            className="w-24 h-24 rounded-full bg-rose-500 text-white font-black text-lg leading-tight shadow-lg shadow-rose-500/40 active:scale-95 active:brightness-90 transition-all flex items-center justify-center text-center px-2"
           >
-            <button
-              onClick={handleStart}
-              className="w-full bg-[#39FF14] text-black font-black py-5 rounded-2xl text-2xl tracking-widest shadow-xl shadow-[#39FF14]/30 active:scale-95 transition-all"
-            >
-              {initialElapsed > 0 ? 'DOORGAAN' : 'START RUN'}
-            </button>
-            <button
-              onClick={() => { localStorage.removeItem(STORAGE_KEY); onDone(null) }}
-              className="w-full mt-3 text-gray-600 text-sm text-center py-1"
-            >
-              Annuleren
-            </button>
+            {initialElapsed > 0 ? 'Ga verder' : 'Start'}
+          </button>
+
+          {/* Annuleren */}
+          <button
+            onClick={() => { localStorage.removeItem(STORAGE_KEY); onDone(null) }}
+            className="text-gray-600 text-sm py-1 active:text-gray-400 transition-colors"
+          >
+            Annuleren
+          </button>
+
+          {/* Stemkeuze — onder Annuleren */}
+          <div className="w-full pt-2 border-t border-gray-900">
+            <p className="text-gray-600 text-xs text-center mb-2 uppercase tracking-wider">Coach stem</p>
+            <div className="grid grid-cols-4 gap-2">
+              {VOICES.map(v => (
+                <button
+                  key={v.id}
+                  onClick={() => handleVoiceChange(v.id)}
+                  className={`py-2 rounded-xl text-xs font-bold transition-all active:scale-95 ${
+                    voice === v.id
+                      ? 'bg-[#39FF14] text-black'
+                      : 'bg-gray-900 text-gray-400 border border-gray-800'
+                  }`}
+                >
+                  <div>{v.label}</div>
+                  <div className="text-[10px] opacity-60">{v.gender}</div>
+                </button>
+              ))}
+            </div>
           </div>
-        </>
+
+          {startError && (
+            <div className="w-full bg-red-950 border border-red-800 rounded-xl px-4 py-2 text-center">
+              <p className="text-red-400 text-xs font-mono break-all">{startError}</p>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Active run UI ─────────────────────────────────────────────────── */}
       {runState !== WorkoutState.IDLE && runState !== WorkoutState.DONE && (
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className={`flex-1 flex flex-col overflow-hidden transition-colors duration-700 ${stateConfig.bg}`}>
 
-          {/* Huidige actie - groot en duidelijk */}
-          <div className={`flex-1 flex flex-col items-center justify-center p-5 transition-colors duration-700 ${stateConfig.bg}`}>
-
-            {/* Stale biometrics banner */}
-            {biometricsStale && (
-              <div className="w-full px-4 py-1.5 mb-3 bg-yellow-900/60 border border-yellow-700 rounded-xl text-center">
+          {/* Staat label + totaaltijd + stale banner */}
+          <div className="shrink-0 px-5 pt-3 space-y-2">
+            {biometricsStale && hasReceivedBiometricsRef.current && (
+              <div className="bg-yellow-900/60 border border-yellow-700 rounded-xl px-4 py-1.5 text-center">
                 <p className="text-yellow-400 text-xs font-bold tracking-wide">
                   ⌚ Geen hartslagdata — controleer je Apple Watch
                 </p>
               </div>
             )}
-
-            {/* Actie label */}
             <div
-              className="text-4xl font-black tracking-widest mb-2 transition-colors duration-500"
+              className="text-center text-2xl font-black tracking-widest transition-colors duration-500"
               style={{ color: stateConfig.color }}
             >
               {paused ? 'GEPAUZEERD' : stateConfig.label}
             </div>
-
-            {/* Grote timer voor huidig interval */}
-            <div className="text-8xl font-black tabular-nums my-3 transition-all duration-200">
-              {formatTime(intervalRemaining)}
+            {/* Totale workout afteller */}
+            <div className="text-center">
+              <span className="text-white font-black tabular-nums text-2xl">{formatTime(Math.max(0, totalDuration - elapsed))}</span>
             </div>
-
-            {/* RPE indicator */}
-            {currentInterval && (
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-gray-500 text-sm">RPE doel:</span>
-                <div className="flex gap-1">
-                  {Array.from({ length: 10 }, (_, i) => (
-                    <div
-                      key={i}
-                      className="w-2.5 h-4 rounded-sm transition-colors"
-                      style={{
-                        backgroundColor: i < (currentInterval.rpeTarget ?? 0)
-                          ? stateConfig.color
-                          : '#1f1f1f'
-                      }}
-                    />
-                  ))}
-                </div>
-                <span className="text-gray-400 text-sm font-bold">{currentInterval.rpeTarget}/10</span>
-              </div>
-            )}
-
-            {/* Totale verstreken tijd */}
-            <p className="text-gray-600 text-sm mt-3">
-              Totaal: {formatTime(elapsed)} / {formatTime(totalDuration)}
-            </p>
           </div>
 
-          {/* Pause / Stop knoppen */}
-          <div
-            className="shrink-0 px-5 pt-3 space-y-2"
-            style={{ paddingBottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}
-          >
-            {/* PAUZE knop */}
-            <button
-              onPointerDown={handlePause}
-              className={`w-full py-4 rounded-2xl text-xl font-black tracking-wider transition-all active:scale-95 ${
-                paused
-                  ? 'bg-[#39FF14] text-black'
-                  : 'bg-gray-900 text-white border border-gray-800'
-              }`}
-            >
-              {paused ? '▶  DOORGAAN' : '⏸  PAUZEER'}
-            </button>
-
-            {/* STOP knop */}
-            <button
-              onPointerDown={() => setShowStopConfirm(true)}
-              className="w-full py-3 rounded-2xl text-base font-bold text-red-500 border border-red-900 active:scale-95 transition-transform"
-            >
-              ■  STOP RUN
-            </button>
-          </div>
+          {/* IntervalDial vult de resterende ruimte */}
+          <IntervalDial
+            subtitle={activeSubtitle}
+            progress={activeProgress}
+            centerDigits={activeCenterDigits}
+            primaryLabel={paused ? 'Resume' : 'Pause'}
+            onPrimary={handlePause}
+            secondaryLabel="Stop Run"
+            onSecondary={() => setShowStopConfirm(true)}
+            secondaryVariant="button"
+            accentColor={stateConfig.color}
+          />
         </div>
       )}
 

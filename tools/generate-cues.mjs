@@ -18,6 +18,7 @@ import fs from 'fs'
 import path from 'path'
 import https from 'https'
 
+// Workout timeline cues (slugified bestandsnaam op basis van tekst)
 const CUES = [
   'Start je warming-up. Loop rustig mee.',
   'Goed gedaan! Begin nu met je cooling-down.',
@@ -29,6 +30,17 @@ const CUES = [
   'Wandelen nu. Herstel, adem rustig.',
   'Loop even bij. Goed bezig!',
   'Wandelinterval. Herstel voor de volgende run.',
+]
+
+// Coach Policy v1.0 biometric cues (vaste slug als bestandsnaam)
+const COACH_CUES = [
+  { slug: 'coach_hr_soft_warning',     text: 'Je hartslag loopt op. Maak je pas iets kleiner.' },
+  { slug: 'coach_hr_too_high',         text: 'Hartslag te hoog. Vertraag twintig seconden.' },
+  { slug: 'coach_hr_recover_walk',     text: 'Herstel echt tijdens het wandelen: schouders los, adem rustig.' },
+  { slug: 'coach_cadence_low',         text: 'Maak je passen korter en lichter.' },
+  { slug: 'coach_cadence_low_hr_high', text: 'Kortere passen, rustig tempo. Niet versnellen.' },
+  { slug: 'coach_hold_steady',         text: 'Perfect tempo. Hou dit vast.' },
+  { slug: 'coach_start_slow',          text: 'Rustig starten. Dit moet makkelijk voelen.' },
 ]
 
 const VOICES = [
@@ -107,9 +119,17 @@ for (const voice of VOICES) {
   const dir = path.join(BASE_DIR, voice.name)
   fs.mkdirSync(dir, { recursive: true })
   console.log(`\n🎙  ${voice.name} (${voice.id})`)
+
+  // Workout timeline cues
   for (const cue of CUES) {
     const outPath = path.join(dir, `${slugify(cue)}.mp3`)
     await generateCue(cue, voice.id, outPath)
+  }
+
+  // Coach biometric cues
+  for (const { slug, text } of COACH_CUES) {
+    const outPath = path.join(dir, `${slug}.mp3`)
+    await generateCue(text, voice.id, outPath)
   }
 }
 

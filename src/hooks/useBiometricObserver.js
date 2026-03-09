@@ -1,163 +1,374 @@
 /**
- * useBiometricObserver — Zone 2 Enforcer + Cadence Coach
+ * useBiometricObserver — Coach Policy Document v1.0
  *
- * Receives biometrics samples and current workout interval type,
- * triggers coach cues via playCoachCue when thresholds are exceeded.
+ * Buffers / smoothing:
+ *   - HR buffer (180 sec): median(laatste 15 sec) = hrNow;
+ *     hrTrend = hrNow − median(15–30 sec geleden)
+ *   - SPM buffer (180 sec): spmNow = median(laatste 12 sec) als >= 3 samples, anders null
+ *   - Stale: als laatste HR sample > 45 sec geleden → geen triggers
  *
- * Rules:
- *  - HR: bpm > targetMaxBpm for >= hrOverThresholdSeconds → play coach_hr_too_high
- *        cooldown: 120s. Counter uses sample timestamps (not sample count).
- *  - Cadence: spm < cadenceMinSpm during RUN interval → play coach_increase_cadence
- *        cooldown: 300s
- *  - Global anti-spam: max 1 cue per 10s regardless of which rule triggered
- *  - Never auto-pauses the workout.
+ * Cooldowns (allemaal ref-based, geen re-renders):
+ *   - Global anti-spam  : 10 sec tussen elke twee cues
+ *   - HR hard           : 120 sec na coach_hr_too_high
+ *   - HR soft           : 90 sec na coach_hr_soft_warning
+ *   - Cadence           : 300 sec na cadence-cue
+ *   - Hold steady       : 600 sec na coach_hold_steady
+ *
+ * Walk-recovery per interval: één cue per WALK-interval, reset bij mode-wissel.
+ *
+ * API: { onSample(sample, mode), reset(), setConfig(partial), replaySamples(samples, modes) }
+ *   mode = WorkoutState string: 'RUN' | 'WALK' | 'WARMUP' | 'COOLDOWN' | 'IDLE'
  */
 
-import { useRef, useCallback, useState } from 'react'
+import { useRef, useCallback } from 'react'
 
-const DEV = import.meta.env.DEV
-const log = DEV ? (...args) => console.log('[BiometricObserver]', ...args) : () => {}
+// ── Debug flag — zet op true voor uitgebreide console output ─────────────────
+const DEBUG_COACHING = false
+const log = DEBUG_COACHING ? (...a) => console.log('[Coach]', ...a) : () => {}
 
+// ── Config defaults (Coach Policy Document v1.0) ─────────────────────────────
 const DEFAULTS = {
   targetMaxBpm:           145,
-  hrOverThresholdSeconds:  15,
-  hrCooldownSeconds:      120,
-  cadenceMinSpm:          155,
-  cadenceCooldownSeconds: 300,
-  globalAntiSpamSeconds:   10,
+  hrHardDurationSec:       15,   // sec boven max voor hard warning
+  hrSoftDurationSec:        8,   // sec boven max voor soft warning
+  hrSoftTrendBpm:           6,   // bpm/15sec stijging voor soft warning
+  hrHardCooldownSec:      120,
+  hrSoftCooldownSec:       90,
+  hrRecoveryMinDropBpm:     6,   // minimale daling tijdens WALK
+  hrRecoveryWindowStart:   20,   // sec in WALK vanaf wanneer te checken
+  hrRecoveryWindowEnd:     45,   // sec in WALK tot wanneer te checken
+  hrStaleSec:              45,   // sec zonder HR → stale
+  cadenceTargetSpm:       155,
+  cadenceDurationSec:      12,   // sec onder target voor cadence-cue
+  cadenceCooldownSec:     300,
+  steadyWindowSec:        180,   // sec stabiel voor positive cue
+  steadyHrRangeBpm:         8,   // max HR spreiding in window
+  steadySpmRange:           8,   // max SPM spreiding in window
+  steadyCooldownSec:      600,
+  globalAntiSpamSec:       10,
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function median(arr) {
+  if (!arr.length) return null
+  const s = [...arr].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]
+}
+
+const RETENTION_MS = 180 * 1000  // 3 min buffer
+
+// ── Hook ──────────────────────────────────────────────────────────────────────
+
 export function useBiometricObserver({ playCoachCue, config = {} }) {
-  // Merge config once into a stable ref — config changes mid-run are ignored by design
-  const cfgRef = useRef(null)
-  if (cfgRef.current === null) cfgRef.current = { ...DEFAULTS, ...config }
+  const cfgRef = useRef({ ...DEFAULTS, ...config })
 
-  // ── Internal tracking (no re-render on every sample) ─────────────────────
-  const aboveSinceTsRef         = useRef(null) // ms when bpm first exceeded threshold
-  const hrCooldownUntilRef      = useRef(0)    // ms epoch when HR cooldown expires
-  const cadenceCooldownUntilRef = useRef(0)
-  const lastCueTsRef            = useRef(0)    // ms epoch of last played cue (any type)
+  // ── Sample buffers ────────────────────────────────────────────────────────
+  const hrBufRef  = useRef([])   // { ts: ms, bpm: number }[]
+  const spmBufRef = useRef([])   // { ts: ms, spm: number }[]
+  const lastHrTsRef = useRef(0)  // ms, timestamp van laatste geldige HR sample
 
-  // ── UI-observable state ───────────────────────────────────────────────────
-  const [uiState, setUiState] = useState({
-    lastBpm:                 null,
-    lastSpm:                 null,
-    hrAboveThresholdSeconds: 0,
-    hrCooldownActive:        false,
-    cadenceCooldownActive:   false,
-  })
+  // ── HR timing refs ────────────────────────────────────────────────────────
+  const hrHardAboveSinceRef = useRef(null)  // ms: hrNow eerste keer > max (hard)
+  const hrSoftAboveSinceRef = useRef(null)  // ms: hrNow eerste keer > max (soft)
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Walk recovery ─────────────────────────────────────────────────────────
+  const walkStartTsRef    = useRef(null)   // ms: start van huidige WALK
+  const hrAtWalkStartRef  = useRef(null)   // bpm: median vlak voor walk start
+  const walkCueGivenRef   = useRef(false)  // max 1 cue per WALK interval
 
-  const canPlayCue = () => {
-    const now = Date.now()
-    const wait = lastCueTsRef.current + cfgRef.current.globalAntiSpamSeconds * 1000 - now
-    if (wait > 0) {
-      log(`Anti-spam: nog ${(wait / 1000).toFixed(1)}s wachten`)
-      return false
-    }
+  // ── Cadence below since ───────────────────────────────────────────────────
+  const spmBelowSinceRef = useRef(null)  // ms: spmNow eerste keer < target
+
+  // ── Cooldown timestamps ───────────────────────────────────────────────────
+  const hrHardUntilRef    = useRef(0)
+  const hrSoftUntilRef    = useRef(0)
+  const cadenceUntilRef   = useRef(0)
+  const holdSteadyUntilRef = useRef(0)
+  const lastCueAtRef      = useRef(0)  // global anti-spam
+
+  // ── Mode transition ───────────────────────────────────────────────────────
+  const prevModeRef = useRef(null)
+
+  // ── Internal functions ────────────────────────────────────────────────────
+
+  function getHrMetrics(tsMs) {
+    const buf = hrBufRef.current
+    const recent = buf.filter(s => s.ts >= tsMs - 15000).map(s => s.bpm)
+    const older  = buf.filter(s => s.ts >= tsMs - 30000 && s.ts < tsMs - 15000).map(s => s.bpm)
+    const hrNow   = median(recent)
+    const hrPrev  = median(older)
+    const hrTrend = (hrNow !== null && hrPrev !== null) ? hrNow - hrPrev : 0
+    return { hrNow, hrTrend }
+  }
+
+  function getSpmMetrics(tsMs) {
+    const recent = spmBufRef.current.filter(s => s.ts >= tsMs - 12000).map(s => s.spm)
+    return { spmNow: recent.length >= 3 ? median(recent) : null }
+  }
+
+  function canPlayCue(tsMs) {
+    const wait = lastCueAtRef.current + cfgRef.current.globalAntiSpamSec * 1000 - tsMs
+    if (wait > 0) { log(`anti-spam: ${(wait / 1000).toFixed(1)}s`); return false }
     return true
+  }
+
+  function fireCue(slug, tsMs) {
+    playCoachCue(slug)
+    lastCueAtRef.current = tsMs
+    log(`▶ cue="${slug}"`)
   }
 
   // ── Main entry point ──────────────────────────────────────────────────────
 
-  /**
-   * onSample — call with each biometrics event.
-   *
-   * @param {{ timestamp: number, bpm: number|null, spm: number|null }} sample
-   *   timestamp is Unix epoch in seconds (matches HealthKit payload)
-   * @param {string} intervalType  Current workout state: 'run' | 'walk' | 'warmup' | 'cooldown' | 'idle'
-   */
-  const onSample = useCallback((sample, intervalType) => {
+  const onSample = useCallback((sample, mode) => {
     const { timestamp, bpm, spm } = sample
-    const cfg = cfgRef.current
-    const now = Date.now()
-    // Convert Unix-seconds timestamp to ms for internal duration math
-    const sampleMs = timestamp * 1000
+    const cfg   = cfgRef.current
+    const tsMs  = typeof timestamp === 'number' ? timestamp * 1000 : Date.now()
+    const modeU = (mode ?? '').toUpperCase()
 
-    log(`Sample — bpm=${bpm ?? 'null'}  spm=${spm ?? 'null'}  interval=${intervalType}`)
+    // ── Update buffers ─────────────────────────────────────────────────────
+    const prevHrTs = lastHrTsRef.current
 
-    // ── Zone 2 HR Enforcer ────────────────────────────────────────────────
-    if (bpm !== null && bpm !== undefined) {
-      if (bpm > cfg.targetMaxBpm) {
-        // Start accumulating time above threshold
-        if (aboveSinceTsRef.current === null) {
-          aboveSinceTsRef.current = sampleMs
-          log(`HR boven drempel (${bpm} > ${cfg.targetMaxBpm}), teller gestart`)
+    if (bpm != null && !isNaN(bpm)) {
+      hrBufRef.current.push({ ts: tsMs, bpm })
+      lastHrTsRef.current = tsMs
+      hrBufRef.current = hrBufRef.current.filter(s => s.ts >= tsMs - RETENTION_MS)
+    }
+    if (spm != null && !isNaN(spm)) {
+      spmBufRef.current.push({ ts: tsMs, spm })
+      spmBufRef.current = spmBufRef.current.filter(s => s.ts >= tsMs - RETENTION_MS)
+    }
+
+    // ── Stale check ────────────────────────────────────────────────────────
+    const isHrStale = prevHrTs > 0 && bpm == null
+      && (tsMs - prevHrTs) > cfg.hrStaleSec * 1000
+    if (isHrStale) {
+      log(`HR stale (${((tsMs - prevHrTs) / 1000).toFixed(0)}s geen HR)`)
+      return
+    }
+
+    // ── Mode transition ────────────────────────────────────────────────────
+    if (modeU !== prevModeRef.current) {
+      const prev = prevModeRef.current
+      log(`mode: ${prev} → ${modeU}`)
+
+      if (modeU === 'WALK') {
+        walkStartTsRef.current  = tsMs
+        walkCueGivenRef.current = false
+        const { hrNow } = getHrMetrics(tsMs)
+        hrAtWalkStartRef.current = hrNow
+        log(`WALK start — hrAtWalkStart=${hrNow?.toFixed(1)}`)
+      }
+      if (prev === 'WALK') {
+        walkStartTsRef.current  = null
+        walkCueGivenRef.current = false
+      }
+
+      // Reset duratie-tellers bij mode-wissel
+      hrHardAboveSinceRef.current = null
+      hrSoftAboveSinceRef.current = null
+      spmBelowSinceRef.current    = null
+      prevModeRef.current         = modeU
+    }
+
+    const { hrNow, hrTrend } = getHrMetrics(tsMs)
+    const { spmNow }         = getSpmMetrics(tsMs)
+    const isRun  = modeU === 'RUN'
+    const isWalk = modeU === 'WALK'
+    const now    = Date.now()  // wall-clock voor cooldown vergelijking
+
+    if (DEBUG_COACHING) {
+      log(
+        `mode=${modeU}  hrNow=${hrNow?.toFixed(1) ?? 'n/a'}  hrTrend=${hrTrend?.toFixed(1)}` +
+        `  spmNow=${spmNow?.toFixed(1) ?? 'n/a'}` +
+        `  hrHardSince=${hrHardAboveSinceRef.current ? ((tsMs - hrHardAboveSinceRef.current)/1000).toFixed(1)+'s' : '-'}` +
+        `  spmBelowSince=${spmBelowSinceRef.current ? ((tsMs - spmBelowSinceRef.current)/1000).toFixed(1)+'s' : '-'}` +
+        `  hrHardCd=${Math.max(0,(hrHardUntilRef.current - now)/1000).toFixed(0)}s` +
+        `  hrSoftCd=${Math.max(0,(hrSoftUntilRef.current - now)/1000).toFixed(0)}s` +
+        `  cadCd=${Math.max(0,(cadenceUntilRef.current - now)/1000).toFixed(0)}s`
+      )
+    }
+
+    // ── Priority queue: verzamel alle triggers, vuur de hoogste prio ────────
+    let pendingSlug = null
+    let pendingPrio = Infinity
+
+    const propose = (slug, prio) => {
+      if (prio < pendingPrio) { pendingSlug = slug; pendingPrio = prio }
+    }
+
+    // Prio 1 — HR hard warning (RUN only)
+    if (isRun && hrNow !== null) {
+      if (hrNow > cfg.targetMaxBpm) {
+        if (hrHardAboveSinceRef.current === null) hrHardAboveSinceRef.current = tsMs
+        const aboveSec = (tsMs - hrHardAboveSinceRef.current) / 1000
+        log(`HR hard: ${aboveSec.toFixed(1)}s boven max=${cfg.targetMaxBpm}`)
+        if (aboveSec >= cfg.hrHardDurationSec && now >= hrHardUntilRef.current) {
+          propose('coach_hr_too_high', 1)
         }
-
-        const aboveDuration = (sampleMs - aboveSinceTsRef.current) / 1000
-        const hrCooldownActive = now < hrCooldownUntilRef.current
-
-        log(`HR boven drempel: ${aboveDuration.toFixed(1)}s / ${cfg.hrOverThresholdSeconds}s — cooldown: ${hrCooldownActive}`)
-
-        if (aboveDuration >= cfg.hrOverThresholdSeconds && !hrCooldownActive && canPlayCue()) {
-          log(`▶ HR interventie — bpm=${bpm}, ${aboveDuration.toFixed(1)}s boven drempel, interval=${intervalType}`)
-          playCoachCue('coach_hr_too_high')
-          hrCooldownUntilRef.current = now + cfg.hrCooldownSeconds * 1000
-          lastCueTsRef.current = now
-          // Reset so bpm must exceed threshold again after cooldown
-          aboveSinceTsRef.current = null
-        }
-
-        setUiState(prev => ({
-          ...prev,
-          lastBpm: bpm,
-          hrAboveThresholdSeconds: (sampleMs - (aboveSinceTsRef.current ?? sampleMs)) / 1000,
-          hrCooldownActive: now < hrCooldownUntilRef.current,
-        }))
       } else {
-        // bpm at or below threshold — reset accumulator
-        if (aboveSinceTsRef.current !== null) {
-          log(`HR terug onder drempel (${bpm} ≤ ${cfg.targetMaxBpm}), teller gereset`)
+        hrHardAboveSinceRef.current = null
+      }
+    }
+
+    // Prio 2 — HR recovery tijdens WALK
+    if (
+      isWalk &&
+      !walkCueGivenRef.current &&
+      walkStartTsRef.current !== null &&
+      hrAtWalkStartRef.current !== null &&
+      hrNow !== null
+    ) {
+      const walkSec = (tsMs - walkStartTsRef.current) / 1000
+      const drop    = hrAtWalkStartRef.current - hrNow
+      log(`WALK recovery: ${walkSec.toFixed(1)}s in walk, drop=${drop.toFixed(1)}bpm (min ${cfg.hrRecoveryMinDropBpm})`)
+      if (
+        walkSec >= cfg.hrRecoveryWindowStart &&
+        walkSec <= cfg.hrRecoveryWindowEnd &&
+        drop < cfg.hrRecoveryMinDropBpm
+      ) {
+        propose('coach_hr_recover_walk', 2)
+      }
+    }
+
+    // Prio 3 — Cadence cue (RUN only)
+    if (isRun && spmNow !== null) {
+      if (spmNow < cfg.cadenceTargetSpm) {
+        if (spmBelowSinceRef.current === null) spmBelowSinceRef.current = tsMs
+        const belowSec = (tsMs - spmBelowSinceRef.current) / 1000
+        log(`Cadence: ${spmNow.toFixed(1)} spm, ${belowSec.toFixed(1)}s onder ${cfg.cadenceTargetSpm}`)
+        if (belowSec >= cfg.cadenceDurationSec && now >= cadenceUntilRef.current) {
+          const slug = (hrNow !== null && hrNow > cfg.targetMaxBpm - 2)
+            ? 'coach_cadence_low_hr_high'
+            : 'coach_cadence_low'
+          propose(slug, 3)
         }
-        aboveSinceTsRef.current = null
-        setUiState(prev => ({
-          ...prev,
-          lastBpm: bpm,
-          hrAboveThresholdSeconds: 0,
-          hrCooldownActive: now < hrCooldownUntilRef.current,
-        }))
+      } else {
+        spmBelowSinceRef.current = null
       }
     }
 
-    // ── Cadence Enforcer (RUN intervals only) ─────────────────────────────
-    if (spm !== null && spm !== undefined) {
-      const isRun = intervalType === 'run'
-      const cadenceCooldownActive = now < cadenceCooldownUntilRef.current
-
-      log(`SPM=${spm}  interval=${intervalType}  isRun=${isRun}  cooldown=${cadenceCooldownActive}`)
-
-      if (isRun && spm < cfg.cadenceMinSpm && !cadenceCooldownActive && canPlayCue()) {
-        log(`▶ Cadence interventie — spm=${spm} < ${cfg.cadenceMinSpm}, interval=${intervalType}`)
-        playCoachCue('coach_increase_cadence')
-        cadenceCooldownUntilRef.current = now + cfg.cadenceCooldownSeconds * 1000
-        lastCueTsRef.current = now
+    // Prio 4 — HR soft warning (RUN only)
+    if (isRun && hrNow !== null) {
+      const condA = hrNow > cfg.targetMaxBpm
+      const condB = hrTrend >= cfg.hrSoftTrendBpm && hrNow >= cfg.targetMaxBpm - 3
+      if (condA || condB) {
+        if (hrSoftAboveSinceRef.current === null) hrSoftAboveSinceRef.current = tsMs
+        const aboveSec = (tsMs - hrSoftAboveSinceRef.current) / 1000
+        log(`HR soft: ${aboveSec.toFixed(1)}s (condA=${condA} condB=${condB})`)
+        if (aboveSec >= cfg.hrSoftDurationSec && now >= hrSoftUntilRef.current) {
+          propose('coach_hr_soft_warning', 4)
+        }
+      } else {
+        hrSoftAboveSinceRef.current = null
       }
-
-      setUiState(prev => ({
-        ...prev,
-        lastSpm: spm,
-        cadenceCooldownActive: now < cadenceCooldownUntilRef.current,
-      }))
     }
-  }, [playCoachCue]) // cfgRef and cooldown refs are stable; only playCoachCue is external
 
-  // ── Reset — call on workout stop ──────────────────────────────────────────
+    // Prio 5 — Positive reinforcement: hold steady (RUN only)
+    if (isRun && hrNow !== null && hrNow <= cfg.targetMaxBpm && now >= holdSteadyUntilRef.current) {
+      const windowMs  = cfg.steadyWindowSec * 1000
+      const hrWindow  = hrBufRef.current.filter(s => s.ts >= tsMs - windowMs).map(s => s.bpm)
+      const spmWindow = spmBufRef.current.filter(s => s.ts >= tsMs - windowMs).map(s => s.spm)
+      if (hrWindow.length >= 10 && spmWindow.length >= 10) {
+        const hrRange  = Math.max(...hrWindow)  - Math.min(...hrWindow)
+        const spmRange = Math.max(...spmWindow) - Math.min(...spmWindow)
+        log(`Hold steady: hrRange=${hrRange.toFixed(1)} spmRange=${spmRange.toFixed(1)}`)
+        if (hrRange <= cfg.steadyHrRangeBpm && spmRange <= cfg.steadySpmRange) {
+          propose('coach_hold_steady', 5)
+        }
+      }
+    }
+
+    // ── Vuur hoogste-prio cue (mits global anti-spam vrij) ─────────────────
+    if (pendingSlug && canPlayCue(now)) {
+      log(`firing prio=${pendingPrio} slug="${pendingSlug}"`)
+      fireCue(pendingSlug, now)
+
+      // Per-cue side-effects
+      switch (pendingSlug) {
+        case 'coach_hr_too_high':
+          hrHardUntilRef.current      = now + cfg.hrHardCooldownSec * 1000
+          hrHardAboveSinceRef.current = null
+          break
+        case 'coach_hr_recover_walk':
+          walkCueGivenRef.current = true
+          break
+        case 'coach_cadence_low':
+        case 'coach_cadence_low_hr_high':
+          cadenceUntilRef.current  = now + cfg.cadenceCooldownSec * 1000
+          spmBelowSinceRef.current = null
+          break
+        case 'coach_hr_soft_warning':
+          hrSoftUntilRef.current      = now + cfg.hrSoftCooldownSec * 1000
+          hrSoftAboveSinceRef.current = null
+          break
+        case 'coach_hold_steady':
+          holdSteadyUntilRef.current = now + cfg.steadyCooldownSec * 1000
+          break
+      }
+    }
+  }, [playCoachCue])
+
+  // ── Reset ─────────────────────────────────────────────────────────────────
+
   const reset = useCallback(() => {
-    aboveSinceTsRef.current         = null
-    hrCooldownUntilRef.current      = 0
-    cadenceCooldownUntilRef.current = 0
-    lastCueTsRef.current            = 0
-    setUiState({
-      lastBpm:                 null,
-      lastSpm:                 null,
-      hrAboveThresholdSeconds: 0,
-      hrCooldownActive:        false,
-      cadenceCooldownActive:   false,
-    })
+    hrBufRef.current            = []
+    spmBufRef.current           = []
+    lastHrTsRef.current         = 0
+    hrHardAboveSinceRef.current = null
+    hrSoftAboveSinceRef.current = null
+    spmBelowSinceRef.current    = null
+    walkStartTsRef.current      = null
+    hrAtWalkStartRef.current    = null
+    walkCueGivenRef.current     = false
+    hrHardUntilRef.current      = 0
+    hrSoftUntilRef.current      = 0
+    cadenceUntilRef.current     = 0
+    holdSteadyUntilRef.current  = 0
+    lastCueAtRef.current        = 0
+    prevModeRef.current         = null
     log('Observer gereset')
   }, [])
 
-  return { onSample, reset, uiState }
+  // ── setConfig (runtime config update) ────────────────────────────────────
+
+  const setConfig = useCallback((partial) => {
+    cfgRef.current = { ...cfgRef.current, ...partial }
+    log('Config updated:', partial)
+  }, [])
+
+  // ── replaySamples (dev/test only) ─────────────────────────────────────────
+  // Gebruik: replaySamples([{timestamp, bpm, spm}, ...], ['RUN', 'RUN', 'WALK', ...])
+
+  const replaySamples = useCallback((samples, modeSequence = []) => {
+    if (!DEBUG_COACHING) return
+    console.log('[Coach] replaySamples:', samples.length, 'samples')
+    reset()
+    samples.forEach((s, i) => {
+      const mode = modeSequence[i] ?? modeSequence.at(-1) ?? 'RUN'
+      onSample(s, mode)
+    })
+  }, [onSample, reset])
+
+  return { onSample, reset, setConfig, replaySamples }
 }
+
+/**
+ * Cue slugs + default Dutch TTS fallback tekst (in WorkoutAudioPlugin.swift):
+ *   coach_hr_soft_warning    → "Je hartslag loopt op. Maak je pas iets kleiner."
+ *   coach_hr_too_high        → "Hartslag te hoog. Vertraag twintig seconden."
+ *   coach_hr_recover_walk    → "Herstel echt tijdens het wandelen: schouders los, adem rustig."
+ *   coach_cadence_low        → "Maak je passen korter en lichter."
+ *   coach_cadence_low_hr_high→ "Kortere passen, rustig tempo. Niet versnellen."
+ *   coach_hold_steady        → "Perfect tempo. Hou dit vast."
+ *   coach_start_slow         → "Rustig starten. Dit moet makkelijk voelen."
+ *
+ * Test checklist:
+ *   1) HR > 145 bpm gedurende >= 15 sec in RUN  → coach_hr_too_high, 120s cooldown
+ *   2) hrTrend >= +6 bpm/15s EN hrNow >= 142 in RUN, 8 sec  → coach_hr_soft_warning, 90s cooldown
+ *   3) WALK: hrDrop < 6 bpm na 20–45 sec  → coach_hr_recover_walk, 1× per WALK interval
+ *   4) spmNow < 155 gedurende >= 12 sec in RUN  → coach_cadence_low(_hr_high), 300s cooldown
+ *   5) Stabiele RUN (hr/spm range <= 8 in 3 min, hrNow <= 145)  → coach_hold_steady, 600s cooldown
+ */

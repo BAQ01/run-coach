@@ -162,8 +162,9 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     /// Gebruikt ducking (zet muziek zachter) tijdens het afspelen, precies als reguliere cues.
     /// Heeft GEEN effect op elapsed time, scheduling of workout state.
     @objc func playCoachCue(_ call: CAPPluginCall) {
-        let slug  = call.getString("slug")  ?? ""
-        let voice = call.getString("voice") ?? currentVoice
+        let slug         = call.getString("slug")         ?? ""
+        let voice        = call.getString("voice")        ?? currentVoice
+        let fallbackText = call.getString("fallbackText") // optioneel, meegestuurd vanuit JS coachCues.js
         guard !slug.isEmpty else { call.reject("slug ontbreekt"); return }
 
         DispatchQueue.main.async { [weak self] in
@@ -179,15 +180,25 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
                 self.speechPlayers.append(player)
                 print("[WorkoutAudio] Coach cue gespeeld: \(slug)")
             } else {
-                // TTS fallback: slug → leesbare Nederlandse tekst
+                // TTS fallback: gebruik JS-meegegeven tekst (canoniek NL uit coachCues.js),
+                // anders hardcoded fallback voor backwards-compatibiliteit.
                 let ttsText: String
-                switch slug {
-                case "coach_hr_too_high":       ttsText = "Hartslag te hoog, vertraag je tempo"
-                case "coach_increase_cadence":  ttsText = "Verhoog je cadans"
-                default:
-                    ttsText = slug
-                        .replacingOccurrences(of: "coach_", with: "")
-                        .replacingOccurrences(of: "_", with: " ")
+                if let text = fallbackText, !text.isEmpty {
+                    ttsText = text
+                } else {
+                    switch slug {
+                    case "coach_hr_too_high":          ttsText = "Hartslag te hoog. Vertraag twintig seconden."
+                    case "coach_hr_soft_warning":      ttsText = "Je hartslag loopt op. Maak je pas iets kleiner."
+                    case "coach_hr_recover_walk":      ttsText = "Herstel echt tijdens het wandelen: schouders los, adem rustig."
+                    case "coach_cadence_low":          ttsText = "Maak je passen korter en lichter."
+                    case "coach_cadence_low_hr_high":  ttsText = "Kortere passen, rustig tempo. Niet versnellen."
+                    case "coach_hold_steady":          ttsText = "Perfect tempo. Hou dit vast."
+                    case "coach_start_slow":           ttsText = "Rustig starten. Dit moet makkelijk voelen."
+                    default:
+                        ttsText = slug
+                            .replacingOccurrences(of: "coach_", with: "")
+                            .replacingOccurrences(of: "_", with: " ")
+                    }
                 }
                 let utt = AVSpeechUtterance(string: ttsText)
                 utt.voice = AVSpeechSynthesisVoice(language: "nl-NL")

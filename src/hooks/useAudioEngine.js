@@ -14,6 +14,7 @@
 import { useRef, useCallback, useEffect } from 'react'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import audioCueData from '../lib/audioCueData.js'
+import { getCoachCueText, getCoachCuePath } from '../lib/coachCues.js'
 
 export const WorkoutAudio = registerPlugin('WorkoutAudio')
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -297,22 +298,18 @@ export function useAudioEngine() {
 
   // ── playCoachCue — Phase B: immediate cue outside scheduled timeline ─────
 
-  // Maps slug to Dutch TTS fallback text for the web path
-  const CUE_TTS_FALLBACK = {
-    'coach_hr_too_high':      'Hartslag te hoog, vertraag je tempo',
-    'coach_increase_cadence': 'Verhoog je cadans',
-  }
-
   const playCoachCue = useCallback(async (slug) => {
+    const voice = storedVoiceRef.current ?? 'rebecca'
+    const fallbackText = getCoachCueText(slug) ?? slug.replace(/_/g, ' ')
+
     if (IS_NATIVE) {
-      await WorkoutAudio.playCoachCue({ slug, voice: storedVoiceRef.current ?? 'rebecca' })
+      await WorkoutAudio.playCoachCue({ slug, voice, fallbackText })
         .catch(err => console.warn('[AudioEngine] playCoachCue mislukt:', err))
       return
     }
 
-    // Web path: try audioCueData first, then TTS
+    // Web path: probeer eerst de base64-embedded MP3, dan TTS
     const ctx = ctxRef.current
-    const voice = storedVoiceRef.current ?? 'rebecca'
     if (!ctx) return
 
     const dataUri = audioCueData[voice]?.[slug]
@@ -330,15 +327,19 @@ export function useAudioEngine() {
       }
     }
 
-    // TTS fallback
+    // Controleer of het bestand überhaupt bestaat (dev-diagnose)
+    if (import.meta.env?.DEV) {
+      console.warn(`[CoachCue] Missing mp3 for ${voice}/${slug}, using TTS fallback`)
+    }
+
+    // TTS fallback — gebruikt canonieke NL tekst uit coachCues.js
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel()
-      const text = CUE_TTS_FALLBACK[slug] ?? slug.replace(/_/g, ' ')
-      const utt = new SpeechSynthesisUtterance(text)
+      const utt = new SpeechSynthesisUtterance(fallbackText)
       utt.lang = 'nl-NL'; utt.rate = 0.95
       window.speechSynthesis.speak(utt)
     }
-  }, []) // storedVoiceRef and ctxRef are stable refs; no deps needed
+  }, []) // storedVoiceRef en ctxRef zijn stabiele refs; geen deps nodig
 
   // ── Native bridge: query methods ──────────────────────────────────────────
 
