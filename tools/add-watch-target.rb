@@ -152,15 +152,32 @@ end
 # ── 6. WatchConnectivity aan Watch target ─────────────────────────────────
 add_system_framework(proj, watch_target, 'WatchConnectivity')
 
-# ── 7. Watch app embedden in iOS App target ────────────────────────────────
+# ── 7. Target dependency: iOS App moet Watch target eerst builden ──────────
+already_dep = ios_target.dependencies.any? { |d| d.target == watch_target }
+unless already_dep
+  ios_target.add_dependency(watch_target)
+  puts "✅ Target dependency toegevoegd (App → RunCoachWatch)"
+else
+  puts "⏭  Target dependency bestaat al"
+end
+
+# ── 8. Watch app embedden in iOS App target ────────────────────────────────
 embed_phase = ios_target.copy_files_build_phases.find { |p| p.name == 'Embed Watch Content' }
 unless embed_phase
   embed_phase = ios_target.new_copy_files_build_phase('Embed Watch Content')
-  embed_phase.dst_subfolder_spec = '16'          # Wrapper
-  embed_phase.dst_path           = '$(CONTENTS_FOLDER_PATH)/Watch'
+  # dstSubfolderSpec 1 = Wrapper, subpath binnen de .app bundle
+  embed_phase.dst_subfolder_spec = '1'
+  embed_phase.dst_path           = 'Watch'
   puts "✅ 'Embed Watch Content' build phase aangemaakt"
 else
-  puts "⏭  'Embed Watch Content' build phase bestaat al"
+  # Corrigeer subfolder spec als die verkeerd was gezet
+  if embed_phase.dst_subfolder_spec != '1'
+    embed_phase.dst_subfolder_spec = '1'
+    embed_phase.dst_path           = 'Watch'
+    puts "🔧 Embed phase subfolder spec gecorrigeerd"
+  else
+    puts "⏭  'Embed Watch Content' build phase bestaat al"
+  end
 end
 
 watch_product_ref = watch_target.product_reference

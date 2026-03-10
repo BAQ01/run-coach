@@ -29,12 +29,22 @@
 		E880C66138445B9AB906C565 /* WatchConnectivity.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC59247E8903DB23ABB18A35 /* WatchConnectivity.framework */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		24FEB6FEC670294FD42641F5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 43152E9AAAD7A61D3E1D1D72;
+			remoteInfo = RunCoachWatch;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		8737B61E30EABB576632BA53 /* Embed Watch Content */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
-			dstSubfolderSpec = 16;
+			dstPath = Watch;
+			dstSubfolderSpec = 1;
 			files = (
 				558CB9E3B1F046256731BCB2 /* RunCoachWatch.app in Embed Watch Content */,
 			);
@@ -193,6 +203,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				758E3B95639B77B1E4212770 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -289,6 +300,15 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		758E3B95639B77B1E4212770 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = RunCoachWatch;
+			target = 43152E9AAAD7A61D3E1D1D72 /* RunCoachWatch */;
+			targetProxy = 24FEB6FEC670294FD42641F5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
