@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useHealthKitWorkout } from '../hooks/useHealthKitWorkout'
 import { useBiometricObserver } from '../hooks/useBiometricObserver'
-import { useUserSettings } from '../hooks/useUserSettings'
+import { useUserSettings, getEffectiveCadenceTarget } from '../hooks/useUserSettings'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
 import IntervalDial from '../components/IntervalDial'
 
@@ -39,7 +39,8 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     if (!settings) return
     observerSetConfig({
       targetMaxBpm:      settings.zone2_max_bpm,
-      cadenceTargetSpm:  settings.cadence_target_spm,
+      cadenceMode:       settings.cadence_mode,
+      cadenceTargetSpm:  getEffectiveCadenceTarget(settings),
     })
   }, [settings, observerSetConfig])
 

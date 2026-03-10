@@ -40,9 +40,12 @@ const DEFAULTS = {
   hrRecoveryWindowStart:   20,   // sec in WALK vanaf wanneer te checken
   hrRecoveryWindowEnd:     45,   // sec in WALK tot wanneer te checken
   hrStaleSec:              45,   // sec zonder HR → stale
-  cadenceTargetSpm:       155,
-  cadenceDurationSec:      12,   // sec onder target voor cadence-cue
-  cadenceCooldownSec:     300,
+  cadenceMode:            'auto', // 'auto'|'manual'|'off' — off = nooit cues
+  cadenceTargetSpm:        160,   // effectieve target (door ActiveRunScreen berekend)
+  cadenceTriggerOffset:      5,   // cue als spmNow < target - offset
+  cadenceDurationSec:       12,   // sec onder target voor cadence-cue
+  cadenceCooldownSec:      300,
+  cadenceGatingSec:         90,   // sec bruikbare cadance data vereist vóór eerste cue
   steadyWindowSec:        180,   // sec stabiel voor positive cue
   steadyHrRangeBpm:         8,   // max HR spreiding in window
   steadySpmRange:           8,   // max SPM spreiding in window
@@ -101,6 +104,13 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
   const hrWarningsRef       = useRef(0)   // aantal HR-waarschuwings-cues
   const cadenceSumRef       = useRef(0)   // som spmNow tijdens RUN
   const cadenceCountRef     = useRef(0)   // aantal RUN samples met geldige spmNow
+
+  // ── Cadence gating + baseline (C + E) ────────────────────────────────────
+  // Gating: cues pas na cadenceGatingSec sec bruikbare cadence data (120–200 spm, RUN)
+  const cadenceFirstUsableTsRef = useRef(null)  // ms: eerste bruikbare sample in sessie
+  const cadenceGatedRef         = useRef(false)  // true zodra gating gepasseerd
+  // Baseline: alle bruikbare RUN spm waarden voor EMA-berekening na de run
+  const cadenceBaselineRunRef   = useRef([])     // raw spm values (120–200, RUN mode)
 
   // ── Internal functions ────────────────────────────────────────────────────
 
@@ -196,6 +206,15 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
         runSampleCountRef.current++
         if (hrNow <= cfg.targetMaxBpm) zone2SampleCountRef.current++
       }
+      // Cadence gating + baseline accumulation (C + E)
+      if (spm != null && spm >= 120 && spm <= 200) {
+        if (cadenceFirstUsableTsRef.current === null) cadenceFirstUsableTsRef.current = tsMs
+        if (!cadenceGatedRef.current && (tsMs - cadenceFirstUsableTsRef.current) >= cfg.cadenceGatingSec * 1000) {
+          cadenceGatedRef.current = true
+          log(`Cadence gating gepasseerd na ${((tsMs - cadenceFirstUsableTsRef.current) / 1000).toFixed(0)}s`)
+        }
+        cadenceBaselineRunRef.current.push(spm)
+      }
       if (spmNow !== null) {
         cadenceSumRef.current   += spmNow
         cadenceCountRef.current++
@@ -258,12 +277,13 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
       }
     }
 
-    // Prio 3 — Cadence cue (RUN only)
-    if (isRun && spmNow !== null) {
-      if (spmNow < cfg.cadenceTargetSpm) {
+    // Prio 3 — Cadence cue (RUN only, alleen als mode niet 'off' en gating gepasseerd)
+    if (isRun && cfg.cadenceMode !== 'off' && cfg.cadenceTargetSpm !== null && cadenceGatedRef.current && spmNow !== null) {
+      const threshold = cfg.cadenceTargetSpm - cfg.cadenceTriggerOffset
+      if (spmNow < threshold) {
         if (spmBelowSinceRef.current === null) spmBelowSinceRef.current = tsMs
         const belowSec = (tsMs - spmBelowSinceRef.current) / 1000
-        log(`Cadence: ${spmNow.toFixed(1)} spm, ${belowSec.toFixed(1)}s onder ${cfg.cadenceTargetSpm}`)
+        log(`Cadence: ${spmNow.toFixed(1)} spm, ${belowSec.toFixed(1)}s onder ${threshold} (target=${cfg.cadenceTargetSpm} offset=${cfg.cadenceTriggerOffset})`)
         if (belowSec >= cfg.cadenceDurationSec && now >= cadenceUntilRef.current) {
           const slug = (hrNow !== null && hrNow > cfg.targetMaxBpm - 2)
             ? 'coach_cadence_low_hr_high'
@@ -363,6 +383,10 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     hrWarningsRef.current       = 0
     cadenceSumRef.current       = 0
     cadenceCountRef.current     = 0
+    // C + E: reset cadence gating + baseline
+    cadenceFirstUsableTsRef.current = null
+    cadenceGatedRef.current         = false
+    cadenceBaselineRunRef.current   = []
     log('Observer gereset')
   }, [])
 
@@ -399,8 +423,22 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
       tip = 'Goed gedaan! Consistentie is de sleutel bij het Galloway-schema.'
     }
 
-    log(`Summary: zone2=${zone2Pct}% hrWarnings=${hrWarnings} avgCadence=${avgCadence}`)
-    return { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm: cfg.targetMaxBpm }
+    // E: Cadence baseline update (alleen bij auto mode + voldoende data)
+    let cadenceBaselineUpdate = null
+    if (cfg.cadenceMode === 'auto') {
+      const rawSamples = cadenceBaselineRunRef.current
+      if (rawSamples.length >= 10) {
+        const sorted = [...rawSamples].sort((a, b) => a - b)
+        const mid = Math.floor(sorted.length / 2)
+        const rawMedian = sorted.length % 2 === 0
+          ? (sorted[mid - 1] + sorted[mid]) / 2
+          : sorted[mid]
+        cadenceBaselineUpdate = { rawMedian: Math.round(rawMedian * 10) / 10, sampleCount: rawSamples.length }
+      }
+    }
+
+    log(`Summary: zone2=${zone2Pct}% hrWarnings=${hrWarnings} avgCadence=${avgCadence} baselineUpdate=${JSON.stringify(cadenceBaselineUpdate)}`)
+    return { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm: cfg.targetMaxBpm, cadenceBaselineUpdate }
   }, [])
 
   return { onSample, reset, setConfig, getSummary }

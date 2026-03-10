@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
+import { useUserSettings } from '../hooks/useUserSettings'
 
 const RPE_LABELS = {
   1: 'Heel makkelijk', 2: 'Makkelijk', 3: 'Comfortabel',
@@ -8,9 +9,10 @@ const RPE_LABELS = {
   7: 'Heel intensief', 8: 'Zwaar', 9: 'Zeer zwaar', 10: 'Maximaal',
 }
 
-// B2: biometricSummary = { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm }
+// B2: biometricSummary = { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm, cadenceBaselineUpdate? }
 export default function PostRunScreen({ session, planId, elapsedSeconds, onComplete, biometricSummary }) {
   const { user } = useAuth()
+  const { settings, saveSettings } = useUserSettings()
   const [rpe, setRpe] = useState(6)
   const [saving, setSaving] = useState(false)
   const savedRef = useRef(false)  // Idempotency guard: voorkomt dubbele inserts bij snel dubbel-tikken
@@ -52,6 +54,18 @@ export default function PostRunScreen({ session, planId, elapsedSeconds, onCompl
       savedRef.current = false
       setSaving(false)
       return
+    }
+
+    // E: Cadence baseline EMA update (alleen bij auto mode + voldoende data)
+    const bu = biometricSummary?.cadenceBaselineUpdate
+    if (bu && settings?.cadence_mode === 'auto' && bu.sampleCount >= 10) {
+      const prev = settings.cadence_baseline_spm
+      const prevN = settings.cadence_baseline_samples ?? 0
+      const newBaseline = prev ? Math.round((0.8 * prev + 0.2 * bu.rawMedian) * 10) / 10 : bu.rawMedian
+      await saveSettings({
+        cadence_baseline_spm:     newBaseline,
+        cadence_baseline_samples: prevN + 1,
+      }).catch(e => console.warn('[PostRun] Baseline opslaan mislukt:', e?.message))
     }
 
     setSaving(false)

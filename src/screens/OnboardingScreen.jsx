@@ -10,8 +10,6 @@ const GOALS = [
   { id: 'half_marathon', label: 'Halve Marathon', emoji: '🏆', description: '~16 weken' },
 ]
 
-const CADENCE_OPTIONS = [150, 155, 160, 165]
-
 // Bereken zone2MaxBpm op basis van leeftijd (70% van maxHR)
 function calcZone2Max(age) {
   if (!age || isNaN(age) || age < 10 || age > 100) return null
@@ -26,7 +24,8 @@ export default function OnboardingScreen({ onComplete, onCancel }) {
   // B1: Stap 4 — persoonlijke zones
   const [ageInput, setAgeInput] = useState('')
   const [zone2Bpm, setZone2Bpm] = useState(145)
-  const [cadenceTarget, setCadenceTarget] = useState(155)
+  const [cadenceMode, setCadenceMode] = useState('auto')     // 'auto'|'manual'|'off'
+  const [cadencePreset, setCadencePreset] = useState('normal') // 'low'|'normal'|'high'
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -64,11 +63,12 @@ export default function OnboardingScreen({ onComplete, onCancel }) {
       // B1: Sla user_settings op (leeftijd optioneel)
       const ageVal = ageInput.trim() !== '' ? Number(ageInput) : null
       await supabase.from('user_settings').upsert({
-        user_id:            user.id,
-        age:                ageVal,
-        zone2_max_bpm:      zone2Bpm,
-        cadence_target_spm: cadenceTarget,
-        updated_at:         new Date().toISOString(),
+        user_id:        user.id,
+        age:            ageVal,
+        zone2_max_bpm:  zone2Bpm,
+        cadence_mode:   cadenceMode,
+        cadence_preset: cadencePreset,
+        updated_at:     new Date().toISOString(),
       }, { onConflict: 'user_id' })
 
       onComplete(plan)
@@ -318,29 +318,66 @@ export default function OnboardingScreen({ onComplete, onCancel }) {
               />
             </div>
 
-            {/* Cadans doel */}
+            {/* Cadans coaching */}
             <div className="bg-gray-900 rounded-2xl p-4 space-y-3">
               <div>
-                <p className="text-white font-bold text-sm">Cadans doel</p>
+                <p className="text-white font-bold text-sm">Cadans coaching</p>
                 <p className="text-gray-500 text-xs mt-0.5">
-                  Stappen per minuut tijdens de loopstukken.
+                  De coach helpt je een betere loopstap te ontwikkelen.
                 </p>
               </div>
-              <div className="grid grid-cols-4 gap-2">
-                {CADENCE_OPTIONS.map(c => (
+
+              {/* Mode selector: Auto / Handmatig / Uit */}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'auto',   label: 'Auto',      desc: 'Past zich aan' },
+                  { id: 'manual', label: 'Handmatig', desc: 'Kies niveau' },
+                  { id: 'off',    label: 'Uit',        desc: 'Geen coaching' },
+                ].map(m => (
                   <button
-                    key={c}
-                    onClick={() => setCadenceTarget(c)}
-                    className={`py-2.5 rounded-xl text-sm font-bold transition-all active:scale-95 ${
-                      cadenceTarget === c
+                    key={m.id}
+                    onClick={() => setCadenceMode(m.id)}
+                    className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all active:scale-95 text-center ${
+                      cadenceMode === m.id
                         ? 'bg-[#39FF14] text-black'
                         : 'bg-gray-800 text-gray-400 border border-gray-700'
                     }`}
                   >
-                    {c}
+                    <div>{m.label}</div>
+                    <div className={`text-[10px] mt-0.5 ${cadenceMode === m.id ? 'opacity-60' : 'opacity-40'}`}>{m.desc}</div>
                   </button>
                 ))}
               </div>
+
+              {/* Presets — alleen zichtbaar bij 'manual' */}
+              {cadenceMode === 'manual' && (
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {[
+                    { id: 'low',    label: 'Laag',    sub: '150 spm' },
+                    { id: 'normal', label: 'Normaal', sub: '160 spm' },
+                    { id: 'high',   label: 'Hoog',    sub: '170 spm' },
+                  ].map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => setCadencePreset(p.id)}
+                      className={`py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 text-center ${
+                        cadencePreset === p.id
+                          ? 'bg-white/20 border border-white/40 text-white'
+                          : 'bg-gray-800 text-gray-400 border border-gray-700'
+                      }`}
+                    >
+                      <div>{p.label}</div>
+                      <div className="text-[10px] mt-0.5 opacity-60">{p.sub}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {cadenceMode === 'auto' && (
+                <p className="text-gray-600 text-xs">
+                  De coach leert je looppatroon kennen en geeft na verloop van tijd persoonlijk advies.
+                </p>
+              )}
             </div>
 
             {error && (
