@@ -3,6 +3,7 @@ import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useHealthKitWorkout } from '../hooks/useHealthKitWorkout'
 import { useBiometricObserver } from '../hooks/useBiometricObserver'
 import { useUserSettings, getEffectiveCadenceTarget } from '../hooks/useUserSettings'
+import { useWatchSync } from '../hooks/useWatchSync'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
 import IntervalDial from '../components/IntervalDial'
 
@@ -13,11 +14,10 @@ const VOICES = [
   { id: 'rik',     label: 'Rik',     gender: 'M' },
 ]
 
-
 const STATE_CONFIG = {
-  [WorkoutState.WARMUP]:   { label: 'WARMING-UP', color: '#3B82F6', bg: 'bg-blue-950' },
-  [WorkoutState.RUN]:      { label: 'RENNEN',      color: '#39FF14', bg: 'bg-[#39FF14]/10' },
-  [WorkoutState.WALK]:     { label: 'WANDELEN',    color: '#FF6B00', bg: 'bg-orange-950' },
+  [WorkoutState.WARMUP]:   { label: 'WARMING-UP',  color: '#3B82F6', bg: 'bg-blue-950' },
+  [WorkoutState.RUN]:      { label: 'RENNEN',       color: '#39FF14', bg: 'bg-[#39FF14]/10' },
+  [WorkoutState.WALK]:     { label: 'WANDELEN',     color: '#FF6B00', bg: 'bg-orange-950' },
   [WorkoutState.COOLDOWN]: { label: 'COOLING-DOWN', color: '#8B5CF6', bg: 'bg-purple-950' },
   [WorkoutState.DONE]:     { label: 'KLAAR!',       color: '#39FF14', bg: 'bg-black' },
 }
@@ -25,7 +25,7 @@ const STATE_CONFIG = {
 const STORAGE_KEY = 'activeWorkout'
 
 export default function ActiveRunScreen({ session, planId, initialElapsed = 0, onDone, autoAttach = false }) {
-  const audio = useAudioEngine()
+  const audio     = useAudioEngine()
   const healthkit = useHealthKitWorkout()
   const { settings } = useUserSettings()  // B1: personalized zones
 
@@ -38,11 +38,38 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
   useEffect(() => {
     if (!settings) return
     observerSetConfig({
-      targetMaxBpm:      settings.zone2_max_bpm,
-      cadenceMode:       settings.cadence_mode,
-      cadenceTargetSpm:  getEffectiveCadenceTarget(settings),
+      targetMaxBpm:     settings.zone2_max_bpm,
+      cadenceMode:      settings.cadence_mode,
+      cadenceTargetSpm: getEffectiveCadenceTarget(settings),
     })
   }, [settings, observerSetConfig])
+
+  // ── Live biometrics voor UI-weergave (HR-pill + cadance-pill) ─────────────
+  // Alleen bijwerken bij nieuw HealthKit sample (max ~1x/5s), niet bij elke tick.
+  const [liveHr,  setLiveHr]  = useState(null)
+  const [liveSpm, setLiveSpm] = useState(null)
+  // Refs zodat watch-sync in handleTick altijd actuele waarden heeft
+  const liveHrRef  = useRef(null)
+  const liveSpmRef = useRef(null)
+
+  // ── Watch Sync ─────────────────────────────────────────────────────────────
+  const { sendRunState } = useWatchSync({
+    onPause:  useCallback(() => {
+      if (!pausedRef.current) { audio.pause(); setPaused(true); pausedRef.current = true }
+    }, [audio]),
+    onResume: useCallback(() => {
+      if (pausedRef.current)  { audio.resume(); setPaused(false); pausedRef.current = false }
+    }, [audio]),
+    onStop:   useCallback(() => {
+      setShowStopConfirm(false)
+      // stopRef guard: één keer
+      if (!stopFiredRef.current) { stopFiredRef.current = true; handleStopRef.current?.() }
+    }, []),
+  })
+  const pausedRef      = useRef(false)
+  const stopFiredRef   = useRef(false)
+  const handleStopRef  = useRef(null)   // gevuld nadat handleStop is aangemaakt
+  const lastWatchSyncRef = useRef(0)    // throttle: max 1x/sec naar Watch
 
   // Stable ref so biometrics listener closure always reads current runState
   const runStateRef = useRef(WorkoutState.IDLE)
@@ -95,7 +122,8 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     setRunState(result.state)
     runStateRef.current = result.state   // keep ref in sync for biometrics listener closure
     setCurrentInterval(result.interval)
-    setIntervalRemaining(result.intervalRemaining ?? 0)
+    const rem = result.intervalRemaining ?? 0
+    setIntervalRemaining(rem)
 
     // Bewaar staat elke tick zodat iOS-herstart de workout kan hervatten
     try {
@@ -111,11 +139,29 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
       const summary = observerGetSummary()  // B2: verzamel inzichten
       setTimeout(() => onDone(elapsedSeconds, summary), 1500)
     }
-  }, [intervals, audio, onDone, session, planId, observerGetSummary])
+
+    // Watch sync — gethrottled op 1s
+    const now = Date.now()
+    if (now - lastWatchSyncRef.current >= 1000) {
+      lastWatchSyncRef.current = now
+      const sc = STATE_CONFIG[result.state]
+      sendRunState({
+        mode:             result.state,
+        remainingSeconds: rem,
+        totalSeconds:     intervals.reduce((s, iv) => s + iv.durationSeconds, 0),
+        hr:               liveHrRef.current,
+        spm:              liveSpmRef.current,
+        isPaused:         pausedRef.current,
+        accentColor:      sc?.color ?? '#39FF14',
+      })
+    }
+  }, [intervals, audio, onDone, session, planId, observerGetSummary, sendRunState])
 
   // ── Start – geeft cue-timeline + stem door aan de audio engine ────────────
   const handleStart = useCallback(async () => {
     setStartError(null)
+    stopFiredRef.current = false
+    pausedRef.current    = false
     try {
       const cueTimeline = buildCueTimeline(intervals)
 
@@ -136,6 +182,11 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
           biometricsListenerRef.current = await healthkit.attachBiometrics(sample => {
             hasReceivedBiometricsRef.current = true
             setBiometricsStale(false)
+            // Bijwerken live biometrics pill (HR + cadence)
+            const hr  = sample.bpm != null ? Math.round(sample.bpm) : null
+            const spm = sample.spm != null ? Math.round(sample.spm) : null
+            if (hr  !== liveHrRef.current)  { liveHrRef.current  = hr;  setLiveHr(hr)   }
+            if (spm !== liveSpmRef.current) { liveSpmRef.current = spm; setLiveSpm(spm) }
             observerOnSample(sample, runStateRef.current)
           })
           staleListenerRef.current = await healthkit.attachStale(() => setBiometricsStale(true))
@@ -146,7 +197,7 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
       console.error('[ActiveRun] Start mislukt:', err)
       setStartError(err?.message ?? String(err))
     }
-  }, [audio, healthkit, handleTick, intervals, voice, initialElapsed, removeHKListeners])
+  }, [audio, healthkit, handleTick, intervals, voice, initialElapsed, removeHKListeners, observerReset, observerOnSample])
 
   // ── Auto-attach: koppel listeners aan al-lopende native sessie ────────────
   useEffect(() => {
@@ -161,6 +212,10 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     healthkit.attachBiometrics(sample => {
       hasReceivedBiometricsRef.current = true
       setBiometricsStale(false)
+      const hr  = sample.bpm != null ? Math.round(sample.bpm) : null
+      const spm = sample.spm != null ? Math.round(sample.spm) : null
+      if (hr  !== liveHrRef.current)  { liveHrRef.current  = hr;  setLiveHr(hr)   }
+      if (spm !== liveSpmRef.current) { liveSpmRef.current = spm; setLiveSpm(spm) }
       observerOnSample(sample, runStateRef.current)
     }).then(h => { biometricsListenerRef.current = h })
     healthkit.attachStale(() => setBiometricsStale(true))
@@ -172,9 +227,11 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     if (paused) {
       await audio.resume()
       setPaused(false)
+      pausedRef.current = false
     } else {
       await audio.pause()
       setPaused(true)
+      pausedRef.current = true
     }
   }, [paused, audio])
 
@@ -189,8 +246,11 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     onDone(elapsed, summary)
   }, [audio, healthkit, elapsed, onDone, removeHKListeners, observerReset, observerGetSummary])
 
-  const stateConfig = STATE_CONFIG[runState] ?? STATE_CONFIG[WorkoutState.RUN]
-  const totalDuration = intervals.reduce((s, iv) => s + iv.durationSeconds, 0)
+  // Koppel handleStop aan ref zodat Watch command er ook bij kan
+  useEffect(() => { handleStopRef.current = handleStop }, [handleStop])
+
+  const stateConfig    = STATE_CONFIG[runState] ?? STATE_CONFIG[WorkoutState.RUN]
+  const totalDuration  = intervals.reduce((s, iv) => s + iv.durationSeconds, 0)
   const progressPercent = totalDuration > 0 ? Math.min(100, (elapsed / totalDuration) * 100) : 0
 
   // Formatteer timer
@@ -294,12 +354,12 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
       {runState !== WorkoutState.IDLE && runState !== WorkoutState.DONE && (
         <div className={`flex-1 flex flex-col overflow-hidden transition-colors duration-700 ${stateConfig.bg}`}>
 
-          {/* Staat label + totaaltijd + stale banner */}
+          {/* Header: staat label + totaaltijd + stale banner */}
           <div className="shrink-0 px-5 pt-3 space-y-2">
             {biometricsStale && hasReceivedBiometricsRef.current && (
               <div className="bg-yellow-900/60 border border-yellow-700 rounded-xl px-4 py-1.5 text-center">
                 <p className="text-yellow-400 text-xs font-bold tracking-wide">
-                  ⌚ Geen hartslagdata — controleer je Apple Watch
+                  ⌚ Geen recente hartslagdata — controleer je Apple Watch
                 </p>
               </div>
             )}
@@ -311,7 +371,24 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
             </div>
             {/* Totale workout afteller */}
             <div className="text-center">
-              <span className="text-white font-black tabular-nums text-2xl">{formatTime(Math.max(0, totalDuration - elapsed))}</span>
+              <span className="text-white font-black tabular-nums text-2xl">
+                {formatTime(Math.max(0, totalDuration - elapsed))}
+              </span>
+            </div>
+
+            {/* ── Biometrics pill: HR + cadance ─────────────────────────── */}
+            <div className="flex justify-center gap-3">
+              <BiometricPill
+                icon="♥"
+                value={liveHr != null ? `${liveHr}` : '–'}
+                unit="bpm"
+                alert={liveHr != null && settings && liveHr > (settings.zone2_max_bpm ?? 145)}
+              />
+              <BiometricPill
+                icon="⊙"
+                value={liveSpm != null ? `${liveSpm}` : '–'}
+                unit="spm"
+              />
             </div>
           </div>
 
@@ -356,6 +433,22 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Biometrics pill component ─────────────────────────────────────────────────
+
+function BiometricPill({ icon, value, unit, alert = false }) {
+  return (
+    <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-bold tabular-nums transition-colors ${
+      alert
+        ? 'border-red-700 bg-red-950/60 text-red-400'
+        : 'border-gray-800 bg-black/30 text-gray-300'
+    }`}>
+      <span className={alert ? 'text-red-400' : 'text-gray-500'}>{icon}</span>
+      <span>{value}</span>
+      <span className="text-gray-600 font-normal">{unit}</span>
     </div>
   )
 }
