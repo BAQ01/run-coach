@@ -13,10 +13,6 @@ const VOICES = [
   { id: 'rik',     label: 'Rik',     gender: 'M' },
 ]
 
-function intervalTypeToState(type) {
-  const map = { warmup: WorkoutState.WARMUP, run: WorkoutState.RUN, walk: WorkoutState.WALK, cooldown: WorkoutState.COOLDOWN }
-  return map[type] ?? WorkoutState.RUN
-}
 
 const STATE_CONFIG = {
   [WorkoutState.WARMUP]:   { label: 'WARMING-UP', color: '#3B82F6', bg: 'bg-blue-950' },

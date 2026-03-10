@@ -16,7 +16,7 @@
  *
  * Walk-recovery per interval: één cue per WALK-interval, reset bij mode-wissel.
  *
- * API: { onSample(sample, mode), reset(), setConfig(partial), getSummary(), replaySamples(samples, modes) }
+ * API: { onSample(sample, mode), reset(), setConfig(partial), getSummary() }
  *   mode = WorkoutState string: 'RUN' | 'WALK' | 'WARMUP' | 'COOLDOWN' | 'IDLE'
  *
  * getSummary() → { zone2Pct, hrWarnings, avgCadence, tip }
@@ -403,19 +403,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     return { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm: cfg.targetMaxBpm }
   }, [])
 
-  // ── replaySamples (dev/test only) ─────────────────────────────────────────
-
-  const replaySamples = useCallback((samples, modeSequence = []) => {
-    if (!DEBUG_COACHING) return
-    console.log('[Coach] replaySamples:', samples.length, 'samples')
-    reset()
-    samples.forEach((s, i) => {
-      const mode = modeSequence[i] ?? modeSequence.at(-1) ?? 'RUN'
-      onSample(s, mode)
-    })
-  }, [onSample, reset])
-
-  return { onSample, reset, setConfig, getSummary, replaySamples }
+  return { onSample, reset, setConfig, getSummary }
 }
 
 /**
