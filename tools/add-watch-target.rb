@@ -19,6 +19,7 @@ WATCH_SOURCES = %w[
   WatchSessionManager.swift
   LiveRunView.swift
   Extensions.swift
+  HapticsManager.swift
 ].freeze
 
 proj = Xcodeproj::Project.open(PROJECT_PATH)
@@ -91,7 +92,7 @@ else
     :application,
     WATCH_TARGET,
     :watchos,
-    '7.0'
+    '9.0'
   )
   puts "✅ Watch target '#{WATCH_TARGET}' aangemaakt"
 end
@@ -104,7 +105,7 @@ end
   s['SWIFT_VERSION']                 = swift_version
   s['TARGETED_DEVICE_FAMILY']        = '4'
   s['SDKROOT']                       = 'watchos'
-  s['WATCHOS_DEPLOYMENT_TARGET']     = '7.0'
+  s['WATCHOS_DEPLOYMENT_TARGET']     = '9.0'
   s['ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES'] = 'YES'
   s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
   s['CODE_SIGN_STYLE']               = 'Automatic'

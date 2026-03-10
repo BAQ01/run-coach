@@ -26,6 +26,7 @@
 		A1B2C3040000000000000006 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3040000000000000005 /* MainViewController.swift */; };
 		A1B2C3040000000000000009 /* HealthKitWorkoutPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3040000000000000008 /* HealthKitWorkoutPlugin.swift */; };
 		C548F1C065F97F389B355E3B /* LiveRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE96968002591BCD68B7C804 /* LiveRunView.swift */; };
+		C5623D79D12AF6B1EE67CE4C /* HapticsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F9789D0999F2C3A20DB1BBE /* HapticsManager.swift */; };
 		E880C66138445B9AB906C565 /* WatchConnectivity.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC59247E8903DB23ABB18A35 /* WatchConnectivity.framework */; };
 /* End PBXBuildFile section */
 
@@ -65,6 +66,7 @@
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
+		8F9789D0999F2C3A20DB1BBE /* HapticsManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HapticsManager.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		A122ACAB3529A0497B2A13B1 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/WatchOS.platform/Developer/SDKs/WatchOS11.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		A1B2C3040000000000000001 /* WorkoutAudioPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutAudioPlugin.swift; sourceTree = "<group>"; };
@@ -109,6 +111,7 @@
 				EE96968002591BCD68B7C804 /* LiveRunView.swift */,
 				CB24840F988999EFE2185268 /* Extensions.swift */,
 				E3B52ED9C4602EE0754027D3 /* Info.plist */,
+				8F9789D0999F2C3A20DB1BBE /* HapticsManager.swift */,
 			);
 			name = RunCoachWatch;
 			path = RunCoachWatch;
@@ -296,6 +299,7 @@
 				85D554545C512BDD79F1D8CD /* WatchSessionManager.swift in Sources */,
 				C548F1C065F97F389B355E3B /* LiveRunView.swift in Sources */,
 				7CEF8BDCA83FD2C3B5CF3DC8 /* Extensions.swift in Sources */,
+				C5623D79D12AF6B1EE67CE4C /* HapticsManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -348,7 +352,7 @@
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 7.0;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
 			};
 			name = Debug;
 		};
@@ -538,7 +542,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				VALIDATE_PRODUCT = YES;
-				WATCHOS_DEPLOYMENT_TARGET = 7.0;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
 			};
 			name = Release;
 		};

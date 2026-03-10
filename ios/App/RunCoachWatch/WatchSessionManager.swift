@@ -65,15 +65,25 @@ final class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     private func applyPayload(_ p: [String: Any]) {
         DispatchQueue.main.async {
-            if let m  = p["mode"]             as? String  { self.mode             = m  }
-            if let r  = p["remainingSeconds"] as? Double  { self.remainingSeconds = r  }
-            if let t  = p["totalSeconds"]     as? Double  { self.totalSeconds     = t  }
-            if let pa = p["isPaused"]         as? Bool    { self.isPaused         = pa }
-            if let hex = p["accentColor"]     as? String  { self.accentHex        = hex }
+            if let m   = p["mode"]             as? String  { self.mode             = m   }
+            if let r   = p["remainingSeconds"] as? Double  { self.remainingSeconds = r   }
+            if let t   = p["totalSeconds"]     as? Double  { self.totalSeconds     = t   }
+            if let pa  = p["isPaused"]         as? Bool    { self.isPaused         = pa  }
+            if let hex = p["accentColor"]      as? String  { self.accentHex        = hex }
 
             // HR en SPM: null-safe (komen als NSNull als niet beschikbaar)
             if let hr  = p["hr"]  as? Int { self.hr  = hr  } else { self.hr  = nil }
             if let spm = p["spm"] as? Int { self.spm = spm } else { self.spm = nil }
+
+            // Haptics — na state update zodat lastMode correct vergelijkt
+            let hrWarning = p["hrWarning"] as? Bool ?? false
+            HapticsManager.shared.handleUpdate(
+                HapticsManager.RunState(
+                    mode:      self.mode,
+                    isPaused:  self.isPaused,
+                    hrWarning: hrWarning
+                )
+            )
         }
     }
 }

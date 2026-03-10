@@ -8,5 +8,6 @@
   "[typescript]": {
     "editor.defaultFormatter": "denoland.vscode-deno"
   },
-  "editor.formatOnSave": true
+  "editor.formatOnSave": true,
+  "chat.autopilot.enabled": true
 }

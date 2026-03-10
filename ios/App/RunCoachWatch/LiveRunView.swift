@@ -1,12 +1,8 @@
 import SwiftUI
-import WatchKit
 
 struct LiveRunView: View {
     @EnvironmentObject var session: WatchSessionManager
     @State private var showStopConfirm = false
-
-    // ── Haptics bij mode-wissel ───────────────────────────────────────────────
-    @State private var prevMode: String = ""
 
     var body: some View {
         VStack(spacing: 6) {
@@ -75,15 +71,6 @@ struct LiveRunView: View {
             }
             Button("Doorgaan", role: .cancel) {}
         }
-        .onChange(of: session.mode) { newMode in
-            // Haptic bij RUN ↔ WALK wissel
-            if (prevMode == "RUN" && newMode == "WALK") ||
-               (prevMode == "WALK" && newMode == "RUN") {
-                WKInterfaceDevice.current().play(.notification)
-            }
-            prevMode = newMode
-        }
-        .onAppear { prevMode = session.mode }
     }
 
     // MARK: - Helpers
