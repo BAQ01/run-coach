@@ -8,7 +8,8 @@ const RPE_LABELS = {
   7: 'Heel intensief', 8: 'Zwaar', 9: 'Zeer zwaar', 10: 'Maximaal',
 }
 
-export default function PostRunScreen({ session, planId, elapsedSeconds, onComplete }) {
+// B2: biometricSummary = { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm }
+export default function PostRunScreen({ session, planId, elapsedSeconds, onComplete, biometricSummary }) {
   const { user } = useAuth()
   const [rpe, setRpe] = useState(6)
   const [saving, setSaving] = useState(false)
@@ -30,21 +31,25 @@ export default function PostRunScreen({ session, planId, elapsedSeconds, onCompl
     const startedAt = new Date(now.getTime() - (elapsedSeconds ?? 0) * 1000)
 
     const { error } = await supabase.from('workout_logs').insert({
-      user_id:          user.id,
-      plan_id:          planId ?? null,
-      session_number:   session.sessionNumber,
-      week:             session.week,
-      day:              session.day,
-      duration_seconds: Math.round(elapsedSeconds ?? 0),
-      rpe_score:        rpe,
-      completed_at:     now.toISOString(),
-      started_at:       startedAt.toISOString(),
-      ended_at:         now.toISOString(),
+      user_id:            user.id,
+      plan_id:            planId ?? null,
+      session_number:     session.sessionNumber,
+      week:               session.week,
+      day:                session.day,
+      duration_seconds:   Math.round(elapsedSeconds ?? 0),
+      rpe_score:          rpe,
+      completed_at:       now.toISOString(),
+      started_at:         startedAt.toISOString(),
+      ended_at:           now.toISOString(),
+      // B2: post-run inzichten
+      time_in_zone2_pct:  biometricSummary?.zone2Pct ?? null,
+      hr_warnings_count:  biometricSummary?.hrWarnings ?? 0,
+      avg_cadence_run:    biometricSummary?.avgCadence ?? null,
     })
 
     if (error) {
       console.error('[PostRun] Opslaan mislukt:', error.message)
-      savedRef.current = false  // staat retry toe bij fout
+      savedRef.current = false
       setSaving(false)
       return
     }
@@ -52,6 +57,12 @@ export default function PostRunScreen({ session, planId, elapsedSeconds, onCompl
     setSaving(false)
     onComplete()
   }
+
+  const hasBiometrics = biometricSummary && (
+    biometricSummary.zone2Pct !== null ||
+    biometricSummary.hrWarnings > 0 ||
+    biometricSummary.avgCadence !== null
+  )
 
   return (
     <div className="h-screen bg-black text-white flex flex-col">
@@ -68,7 +79,7 @@ export default function PostRunScreen({ session, planId, elapsedSeconds, onCompl
           <h2 className="text-3xl font-black mb-1">TRAINING KLAAR!</h2>
           <p className="text-gray-400">Week {session.week} • Dag {session.day}</p>
 
-          {/* Stats */}
+          {/* Basis stats */}
           <div className="flex gap-6 justify-center mt-5">
             <div className="text-center">
               <div className="text-3xl font-black text-[#39FF14]">{formatTime(elapsedSeconds)}</div>
@@ -81,6 +92,51 @@ export default function PostRunScreen({ session, planId, elapsedSeconds, onCompl
             </div>
           </div>
         </div>
+
+        {/* B2: Post-run inzichten */}
+        {hasBiometrics && (
+          <div className="w-full max-w-sm mb-6 space-y-3">
+            <h3 className="text-base font-black text-white text-center uppercase tracking-wider">
+              Analyse
+            </h3>
+
+            {/* Statistieken row */}
+            <div className="grid grid-cols-3 gap-2">
+              {biometricSummary.zone2Pct !== null && (
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <div className={`text-2xl font-black ${biometricSummary.zone2Pct >= 70 ? 'text-[#39FF14]' : biometricSummary.zone2Pct >= 50 ? 'text-orange-400' : 'text-red-400'}`}>
+                    {biometricSummary.zone2Pct}%
+                  </div>
+                  <div className="text-gray-500 text-xs mt-0.5">Zone 2</div>
+                </div>
+              )}
+              {biometricSummary.hrWarnings !== null && (
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <div className={`text-2xl font-black ${biometricSummary.hrWarnings === 0 ? 'text-[#39FF14]' : biometricSummary.hrWarnings <= 2 ? 'text-orange-400' : 'text-red-400'}`}>
+                    {biometricSummary.hrWarnings}
+                  </div>
+                  <div className="text-gray-500 text-xs mt-0.5">HR alerts</div>
+                </div>
+              )}
+              {biometricSummary.avgCadence !== null && (
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <div className={`text-2xl font-black ${biometricSummary.avgCadence >= 155 ? 'text-[#39FF14]' : 'text-orange-400'}`}>
+                    {biometricSummary.avgCadence}
+                  </div>
+                  <div className="text-gray-500 text-xs mt-0.5">Cadans</div>
+                </div>
+              )}
+            </div>
+
+            {/* Coach tip */}
+            {biometricSummary.tip && (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Coach tip</p>
+                <p className="text-white text-sm leading-snug">{biometricSummary.tip}</p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* RPE slider */}
         <div className="w-full max-w-sm">

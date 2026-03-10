@@ -50,6 +50,9 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
     private var currentVoice = "rebecca"
     private var storedTimeline = [[String: Any]]()
 
+    // A3: Rate limiter voor playCoachCue (min 1.0s tussen twee cue-starts)
+    private var lastCoachCueAt: Date?
+
     // MARK: - Elapsed time
 
     private func elapsedSeconds() -> Double {
@@ -167,6 +170,15 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         let fallbackText = call.getString("fallbackText") // optioneel, meegestuurd vanuit JS coachCues.js
         guard !slug.isEmpty else { call.reject("slug ontbreekt"); return }
 
+        // A3: Rate limiter — negeer cues die te snel na elkaar komen (< 1.0s)
+        let now = Date()
+        if let last = lastCoachCueAt, now.timeIntervalSince(last) < 1.0 {
+            print("[WorkoutAudio] Coach cue genegeerd (rate limit): \(slug)")
+            call.resolve()
+            return
+        }
+        lastCoachCueAt = now
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let subdir = "public/audio/cues/\(voice)"
@@ -225,6 +237,7 @@ public class WorkoutAudioPlugin: CAPPlugin, CAPBridgedPlugin, AVAudioPlayerDeleg
         pausedInterval = 0
         pauseDate = nil
         currentCueIndex = 0
+        lastCoachCueAt = nil
         clearSavedState()
     }
 

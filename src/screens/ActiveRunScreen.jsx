@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useHealthKitWorkout } from '../hooks/useHealthKitWorkout'
 import { useBiometricObserver } from '../hooks/useBiometricObserver'
+import { useUserSettings } from '../hooks/useUserSettings'
 import { resolveWorkoutState, buildCueTimeline, WorkoutState } from '../lib/workoutStateMachine'
 import IntervalDial from '../components/IntervalDial'
 
@@ -30,11 +31,22 @@ const STORAGE_KEY = 'activeWorkout'
 export default function ActiveRunScreen({ session, planId, initialElapsed = 0, onDone, autoAttach = false }) {
   const audio = useAudioEngine()
   const healthkit = useHealthKitWorkout()
+  const { settings } = useUserSettings()  // B1: personalized zones
 
   // ── BiometricObserver — Zone 2 Enforcer + Cadence Coach ───────────────────
-  const { onSample: observerOnSample, reset: observerReset } = useBiometricObserver({
+  const { onSample: observerOnSample, reset: observerReset, setConfig: observerSetConfig, getSummary: observerGetSummary } = useBiometricObserver({
     playCoachCue: audio.playCoachCue,
   })
+
+  // B1: Sync personalized zone config naar observer zodra settings geladen zijn
+  useEffect(() => {
+    if (!settings) return
+    observerSetConfig({
+      targetMaxBpm:      settings.zone2_max_bpm,
+      cadenceTargetSpm:  settings.cadence_target_spm,
+    })
+  }, [settings, observerSetConfig])
+
   // Stable ref so biometrics listener closure always reads current runState
   const runStateRef = useRef(WorkoutState.IDLE)
   const [voice, setVoice] = useState(() => localStorage.getItem('coachVoice') ?? 'rebecca')
@@ -68,6 +80,17 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
 
   const intervals = session.intervals
 
+  // ── A4: Helper die altijd beide listeners opruimt vóór re-attach ──────────
+  const removeHKListeners = useCallback(() => {
+    biometricsListenerRef.current?.remove()
+    biometricsListenerRef.current = null
+    staleListenerRef.current?.remove()
+    staleListenerRef.current = null
+  }, [])
+
+  // A4: Cleanup listeners on unmount
+  useEffect(() => () => removeHKListeners(), [removeHKListeners])
+
   // ── Tick handler – alleen UI updates, audio is pre-scheduled ─────────────
   const handleTick = useCallback((elapsedSeconds) => {
     setElapsed(elapsedSeconds)
@@ -88,9 +111,10 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
     if (result.state === WorkoutState.DONE) {
       localStorage.removeItem(STORAGE_KEY)
       audio.stop()
-      setTimeout(() => onDone(elapsedSeconds), 1500)
+      const summary = observerGetSummary()  // B2: verzamel inzichten
+      setTimeout(() => onDone(elapsedSeconds, summary), 1500)
     }
-  }, [intervals, audio, onDone, session, planId])
+  }, [intervals, audio, onDone, session, planId, observerGetSummary])
 
   // ── Start – geeft cue-timeline + stem door aan de audio engine ────────────
   const handleStart = useCallback(async () => {
@@ -102,10 +126,14 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
       await audio.start(handleTick, cueTimeline, voice, initialElapsed)
       setRunState(WorkoutState.WARMUP)
 
-      // HealthKit in de achtergrond koppelen — data komt pas als de gebruiker beweegt
+      // HealthKit in de achtergrond koppelen
       setBiometricsStale(false)
       hasReceivedBiometricsRef.current = false
       observerReset()
+
+      // A4: Verwijder eventuele overgebleven listeners vóór nieuwe attach
+      removeHKListeners()
+
       healthkit.requestPermissions()
         .then(async () => {
           biometricsListenerRef.current = await healthkit.attachBiometrics(sample => {
@@ -121,13 +149,16 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
       console.error('[ActiveRun] Start mislukt:', err)
       setStartError(err?.message ?? String(err))
     }
-  }, [audio, healthkit, handleTick, intervals, voice, initialElapsed])
+  }, [audio, healthkit, handleTick, intervals, voice, initialElapsed, removeHKListeners])
 
   // ── Auto-attach: koppel listeners aan al-lopende native sessie ────────────
   useEffect(() => {
     if (!autoAttach) return
     audio.attach(handleTick).catch(err => console.error('[ActiveRun] Attach mislukt:', err))
-    // Also attach HealthKit biometrics so observer runs during auto-attach sessions
+
+    // A4: Verwijder eventuele overgebleven listeners vóór re-attach
+    removeHKListeners()
+
     hasReceivedBiometricsRef.current = false
     observerReset()
     healthkit.attachBiometrics(sample => {
@@ -151,24 +182,15 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
   }, [paused, audio])
 
   // ── Stop ───────────────────────────────────────────────────────────────────
-  const removeHKListeners = useCallback(() => {
-    biometricsListenerRef.current?.remove()
-    biometricsListenerRef.current = null
-    staleListenerRef.current?.remove()
-    staleListenerRef.current = null
-  }, [])
-
-  // Cleanup listeners on unmount
-  useEffect(() => () => removeHKListeners(), [removeHKListeners])
-
   const handleStop = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY)
     audio.stop()
     healthkit.stopWorkout()
     removeHKListeners()
+    const summary = observerGetSummary()  // B2: verzamel inzichten ook bij vroegtijdig stoppen
     observerReset()
-    onDone(elapsed)
-  }, [audio, healthkit, elapsed, onDone, removeHKListeners, observerReset])
+    onDone(elapsed, summary)
+  }, [audio, healthkit, elapsed, onDone, removeHKListeners, observerReset, observerGetSummary])
 
   const stateConfig = STATE_CONFIG[runState] ?? STATE_CONFIG[WorkoutState.RUN]
   const totalDuration = intervals.reduce((s, iv) => s + iv.durationSeconds, 0)
@@ -236,7 +258,7 @@ export default function ActiveRunScreen({ session, planId, initialElapsed = 0, o
 
           {/* Annuleren */}
           <button
-            onClick={() => { localStorage.removeItem(STORAGE_KEY); onDone(null) }}
+            onClick={() => { localStorage.removeItem(STORAGE_KEY); onDone(null, null) }}
             className="text-gray-600 text-sm py-1 active:text-gray-400 transition-colors"
           >
             Annuleren

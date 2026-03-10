@@ -14,7 +14,7 @@
 import { useRef, useCallback, useEffect } from 'react'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import audioCueData from '../lib/audioCueData.js'
-import { getCoachCueText, getCoachCuePath } from '../lib/coachCues.js'
+import { getCoachCueVariantText } from '../lib/coachCues.js'
 
 export const WorkoutAudio = registerPlugin('WorkoutAudio')
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -38,6 +38,7 @@ export function useAudioEngine() {
   const storedVoiceRef = useRef('rebecca')
   const tickIntervalRef = useRef(null)
   const visibilityHandlerRef = useRef(null)
+  const sessionSeedRef = useRef(0)  // B3: per-sessie seed voor TTS variantkeuze
 
   // ── Web: context en stille loop ──────────────────────────────────────────
 
@@ -167,6 +168,7 @@ export function useAudioEngine() {
       })
       nativeListenersRef.current = [tickL, completedL]
 
+      sessionSeedRef.current = Date.now()  // B3: nieuw seed per sessie
       await WorkoutAudio.start({
         cueTimeline: (cueTimeline ?? []).map(c => ({
           triggerAt: c.triggerAt,
@@ -180,6 +182,7 @@ export function useAudioEngine() {
     }
 
     // ── Web path ────────────────────────────────────────────────────────────
+    sessionSeedRef.current = Date.now()  // B3: nieuw seed per sessie
     const ctx = await initContext()
     startSilentLoop(ctx)
     startWallRef.current = Date.now() - fromElapsedSeconds * 1000
@@ -298,9 +301,10 @@ export function useAudioEngine() {
 
   // ── playCoachCue — Phase B: immediate cue outside scheduled timeline ─────
 
-  const playCoachCue = useCallback(async (slug) => {
-    const voice = storedVoiceRef.current ?? 'rebecca'
-    const fallbackText = getCoachCueText(slug) ?? slug.replace(/_/g, ' ')
+  // A2: optionele voiceOverride; B3: variant TTS tekst via sessionSeed
+  const playCoachCue = useCallback(async (slug, voiceOverride) => {
+    const voice = voiceOverride ?? storedVoiceRef.current ?? 'rebecca'
+    const fallbackText = getCoachCueVariantText(slug, sessionSeedRef.current) ?? slug.replace(/_/g, ' ')
 
     if (IS_NATIVE) {
       await WorkoutAudio.playCoachCue({ slug, voice, fallbackText })

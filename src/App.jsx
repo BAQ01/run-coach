@@ -57,6 +57,7 @@ export default function App() {
   const [resumeWorkout, setResumeWorkout] = useState(null)
   const [autoAttach, setAutoAttach] = useState(false)
   const [selectedLog, setSelectedLog] = useState(null)
+  const [biometricSummary, setBiometricSummary] = useState(null)  // B2: post-run insights
 
   const loadAllPlans = useCallback(async () => {
     if (!user) return
@@ -133,8 +134,9 @@ export default function App() {
     setView(AppView.ACTIVE_RUN)
   }
 
-  const handleRunDone = (elapsed) => {
+  const handleRunDone = (elapsed, summary) => {
     setRunElapsed(elapsed ?? 0)
+    setBiometricSummary(summary ?? null)  // B2
     setActiveInitialElapsed(0)
     setAutoAttach(false)
     if (elapsed && elapsed > 60) {
@@ -148,6 +150,7 @@ export default function App() {
     setActiveSession(null)
     setActivePlan(null)
     setActiveInitialElapsed(0)
+    setBiometricSummary(null)
     setView(AppView.DASHBOARD)
     setRefreshKey(k => k + 1)  // DashboardScreen herlaadt workout_logs
   }
@@ -238,6 +241,7 @@ export default function App() {
       planId={activePlan.id}
       elapsedSeconds={runElapsed}
       onComplete={handlePostRunComplete}
+      biometricSummary={biometricSummary}
     />
   )
 

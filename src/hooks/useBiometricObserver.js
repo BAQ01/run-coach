@@ -16,8 +16,10 @@
  *
  * Walk-recovery per interval: één cue per WALK-interval, reset bij mode-wissel.
  *
- * API: { onSample(sample, mode), reset(), setConfig(partial), replaySamples(samples, modes) }
+ * API: { onSample(sample, mode), reset(), setConfig(partial), getSummary(), replaySamples(samples, modes) }
  *   mode = WorkoutState string: 'RUN' | 'WALK' | 'WARMUP' | 'COOLDOWN' | 'IDLE'
+ *
+ * getSummary() → { zone2Pct, hrWarnings, avgCadence, tip }
  */
 
 import { useRef, useCallback } from 'react'
@@ -69,9 +71,11 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
   const spmBufRef = useRef([])   // { ts: ms, spm: number }[]
   const lastHrTsRef = useRef(0)  // ms, timestamp van laatste geldige HR sample
 
-  // ── HR timing refs ────────────────────────────────────────────────────────
-  const hrHardAboveSinceRef = useRef(null)  // ms: hrNow eerste keer > max (hard)
-  const hrSoftAboveSinceRef = useRef(null)  // ms: hrNow eerste keer > max (soft)
+  // ── HR timing refs (A1: timestamp-based, reset bij threshold-wissel) ──────
+  // hrHardAboveSinceRef: alleen gezet als hrNow > max en was null.
+  // Reset naar null zodra hrNow <= max of mode wisselt.
+  const hrHardAboveSinceRef = useRef(null)  // ms
+  const hrSoftAboveSinceRef = useRef(null)  // ms
 
   // ── Walk recovery ─────────────────────────────────────────────────────────
   const walkStartTsRef    = useRef(null)   // ms: start van huidige WALK
@@ -90,6 +94,13 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
 
   // ── Mode transition ───────────────────────────────────────────────────────
   const prevModeRef = useRef(null)
+
+  // ── B2: Summary counters (reset per run) ─────────────────────────────────
+  const runSampleCountRef   = useRef(0)   // RUN samples met geldige hrNow
+  const zone2SampleCountRef = useRef(0)   // RUN samples waarbij hrNow <= targetMaxBpm
+  const hrWarningsRef       = useRef(0)   // aantal HR-waarschuwings-cues
+  const cadenceSumRef       = useRef(0)   // som spmNow tijdens RUN
+  const cadenceCountRef     = useRef(0)   // aantal RUN samples met geldige spmNow
 
   // ── Internal functions ────────────────────────────────────────────────────
 
@@ -166,7 +177,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
         walkCueGivenRef.current = false
       }
 
-      // Reset duratie-tellers bij mode-wissel
+      // Reset duratie-tellers bij mode-wissel (A1: expliciete reset)
       hrHardAboveSinceRef.current = null
       hrSoftAboveSinceRef.current = null
       spmBelowSinceRef.current    = null
@@ -178,6 +189,18 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     const isRun  = modeU === 'RUN'
     const isWalk = modeU === 'WALK'
     const now    = Date.now()  // wall-clock voor cooldown vergelijking
+
+    // ── B2: Accumulate summary counters (alleen tijdens RUN) ───────────────
+    if (isRun) {
+      if (hrNow !== null) {
+        runSampleCountRef.current++
+        if (hrNow <= cfg.targetMaxBpm) zone2SampleCountRef.current++
+      }
+      if (spmNow !== null) {
+        cadenceSumRef.current   += spmNow
+        cadenceCountRef.current++
+      }
+    }
 
     if (DEBUG_COACHING) {
       log(
@@ -200,6 +223,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     }
 
     // Prio 1 — HR hard warning (RUN only)
+    // A1: aboveSince alleen zetten wanneer null EN hrNow > max; reset wanneer <= max.
     if (isRun && hrNow !== null) {
       if (hrNow > cfg.targetMaxBpm) {
         if (hrHardAboveSinceRef.current === null) hrHardAboveSinceRef.current = tsMs
@@ -209,6 +233,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
           propose('coach_hr_too_high', 1)
         }
       } else {
+        // hrNow <= max: reset timer (A1 spec: reset zodra hrNow <= max)
         hrHardAboveSinceRef.current = null
       }
     }
@@ -251,6 +276,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     }
 
     // Prio 4 — HR soft warning (RUN only)
+    // A1: aboveSince alleen zetten wanneer null EN condA||condB; reset wanneer geen conditie.
     if (isRun && hrNow !== null) {
       const condA = hrNow > cfg.targetMaxBpm
       const condB = hrTrend >= cfg.hrSoftTrendBpm && hrNow >= cfg.targetMaxBpm - 3
@@ -291,6 +317,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
         case 'coach_hr_too_high':
           hrHardUntilRef.current      = now + cfg.hrHardCooldownSec * 1000
           hrHardAboveSinceRef.current = null
+          hrWarningsRef.current++   // B2
           break
         case 'coach_hr_recover_walk':
           walkCueGivenRef.current = true
@@ -303,6 +330,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
         case 'coach_hr_soft_warning':
           hrSoftUntilRef.current      = now + cfg.hrSoftCooldownSec * 1000
           hrSoftAboveSinceRef.current = null
+          hrWarningsRef.current++   // B2
           break
         case 'coach_hold_steady':
           holdSteadyUntilRef.current = now + cfg.steadyCooldownSec * 1000
@@ -329,18 +357,53 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     holdSteadyUntilRef.current  = 0
     lastCueAtRef.current        = 0
     prevModeRef.current         = null
+    // B2: reset summary counters
+    runSampleCountRef.current   = 0
+    zone2SampleCountRef.current = 0
+    hrWarningsRef.current       = 0
+    cadenceSumRef.current       = 0
+    cadenceCountRef.current     = 0
     log('Observer gereset')
   }, [])
 
-  // ── setConfig (runtime config update) ────────────────────────────────────
+  // ── setConfig (runtime config update, B1: personalized zones) ────────────
 
   const setConfig = useCallback((partial) => {
     cfgRef.current = { ...cfgRef.current, ...partial }
     log('Config updated:', partial)
   }, [])
 
+  // ── getSummary (B2: post-run insights) ────────────────────────────────────
+
+  const getSummary = useCallback(() => {
+    const cfg = cfgRef.current
+    const zone2Pct = runSampleCountRef.current > 0
+      ? Math.round((zone2SampleCountRef.current / runSampleCountRef.current) * 100)
+      : null
+    const avgCadence = cadenceCountRef.current > 0
+      ? Math.round(cadenceSumRef.current / cadenceCountRef.current)
+      : null
+    const hrWarnings = hrWarningsRef.current
+
+    // Genereer contextgevoelige coach-tip
+    let tip
+    if (hrWarnings >= 3) {
+      tip = 'Je hartslag was vaak te hoog. Probeer volgende keer langzamer te starten.'
+    } else if (zone2Pct !== null && zone2Pct >= 80) {
+      tip = 'Uitstekend! Je bleef bijna altijd in Zone 2 — de basis van een sterke loopconditie.'
+    } else if (zone2Pct !== null && zone2Pct < 50) {
+      tip = 'Je liep veel boven Zone 2. Vertraag wat meer tijdens de loopstukken.'
+    } else if (avgCadence !== null && avgCadence < 150) {
+      tip = 'Je cadans was aan de lage kant. Probeer kleinere, snellere stappen te zetten.'
+    } else {
+      tip = 'Goed gedaan! Consistentie is de sleutel bij het Galloway-schema.'
+    }
+
+    log(`Summary: zone2=${zone2Pct}% hrWarnings=${hrWarnings} avgCadence=${avgCadence}`)
+    return { zone2Pct, hrWarnings, avgCadence, tip, zone2MaxBpm: cfg.targetMaxBpm }
+  }, [])
+
   // ── replaySamples (dev/test only) ─────────────────────────────────────────
-  // Gebruik: replaySamples([{timestamp, bpm, spm}, ...], ['RUN', 'RUN', 'WALK', ...])
 
   const replaySamples = useCallback((samples, modeSequence = []) => {
     if (!DEBUG_COACHING) return
@@ -352,7 +415,7 @@ export function useBiometricObserver({ playCoachCue, config = {} }) {
     })
   }, [onSample, reset])
 
-  return { onSample, reset, setConfig, replaySamples }
+  return { onSample, reset, setConfig, getSummary, replaySamples }
 }
 
 /**
