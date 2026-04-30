@@ -13,7 +13,6 @@ if (!rawUrl || !anonKey) {
 const baseUrl = rawUrl.replace(/\/+$/, '')
 const endpoints = [
   '/auth/v1/settings',
-  '/rest/v1/',
   '/storage/v1/version',
 ]
 
